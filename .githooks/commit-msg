@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Validates commit messages follow Conventional Commits format.
+# Activate with: git config core.hooksPath .githooks
+
+commit_msg=$(head -1 "$1")
+
+# Allow merge commits and fixups
+if echo "$commit_msg" | grep -qE "^(Merge |fixup! |squash! |amend! )"; then
+  exit 0
+fi
+
+# Conventional Commits pattern: type(optional-scope)optional-!: description
+pattern="^(feat|fix|perf|refactor|docs|test|ci|chore)(\(.+\))?(!)?: .+"
+
+if ! echo "$commit_msg" | grep -qE "$pattern"; then
+  echo ""
+  echo "ERROR: Commit message does not follow Conventional Commits format."
+  echo ""
+  echo "  Expected: <type>(<scope>): <description>"
+  echo ""
+  echo "  Types: feat, fix, perf, refactor, docs, test, ci, chore"
+  echo "  Scope: optional (e.g., macros, core)"
+  echo "  Breaking: add ! before : (e.g., feat!: remove deprecated API)"
+  echo ""
+  echo "  Examples:"
+  echo "    feat(macros): add struct derive support"
+  echo "    fix(core): correct type mapping for Option<T>"
+  echo "    chore(deps): update syn to 2.1"
+  echo ""
+  echo "  Your message: $commit_msg"
+  echo ""
+  exit 1
+fi

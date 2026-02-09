@@ -1,0 +1,17 @@
+[package]
+name = "csharp-rs"
+version = "0.1.0"
+description = "Generate C# type definitions from Rust structs and enums"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme.workspace = true
+
+[dependencies]
+csharp-rs-macros = { path = "../csharp-rs-macros" }
+
+[lints]
+workspace = true

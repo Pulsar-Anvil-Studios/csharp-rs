@@ -34,8 +34,7 @@ use proc_macro::TokenStream;
 pub fn derive_csharp(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
 
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-        .unwrap_or_else(|_| String::from("."));
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| String::from("."));
     let config = CSharpConfig::from_manifest_dir(std::path::Path::new(&manifest_dir));
 
     match types::process_input(&input, &config) {

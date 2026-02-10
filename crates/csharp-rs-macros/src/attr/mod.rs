@@ -174,10 +174,7 @@ mod tests {
 
     #[test]
     fn apply_screaming_snake() {
-        assert_eq!(
-            Inflection::ScreamingSnake.apply("player_id"),
-            "PLAYER_ID"
-        );
+        assert_eq!(Inflection::ScreamingSnake.apply("player_id"), "PLAYER_ID");
     }
 
     #[test]
@@ -187,10 +184,7 @@ mod tests {
 
     #[test]
     fn apply_screaming_kebab() {
-        assert_eq!(
-            Inflection::ScreamingKebab.apply("player_id"),
-            "PLAYER-ID"
-        );
+        assert_eq!(Inflection::ScreamingKebab.apply("player_id"), "PLAYER-ID");
     }
 
     #[test]

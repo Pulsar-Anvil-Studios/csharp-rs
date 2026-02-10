@@ -133,7 +133,10 @@ mod tests {
     fn extract_option_returns_inner_type() {
         let ty: Type = parse_quote!(Option<i32>);
         let inner = extract_option_inner(&ty);
-        assert!(inner.is_some(), "should extract inner type from Option<i32>");
+        assert!(
+            inner.is_some(),
+            "should extract inner type from Option<i32>"
+        );
     }
 
     #[test]

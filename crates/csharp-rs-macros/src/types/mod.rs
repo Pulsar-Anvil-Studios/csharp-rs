@@ -46,10 +46,7 @@ pub struct DerivedCSharp {
 /// # Errors
 ///
 /// Returns a `syn::Error` for unsupported data structures.
-pub fn process_input(
-    input: &DeriveInput,
-    config: &CSharpConfig,
-) -> syn::Result<DerivedCSharp> {
+pub fn process_input(input: &DeriveInput, config: &CSharpConfig) -> syn::Result<DerivedCSharp> {
     let container = ContainerAttr::from_attrs(&input.attrs)?;
 
     match &input.data {

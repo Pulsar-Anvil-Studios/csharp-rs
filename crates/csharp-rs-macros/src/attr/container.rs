@@ -62,9 +62,8 @@ impl ContainerAttr {
                 let lit: Lit = value.parse()?;
                 if let Lit::Str(ref lit_str) = lit {
                     let raw = lit_str.value();
-                    CSharpNamespace::new(raw.as_str()).map_err(|msg| {
-                        meta.error(format!("invalid namespace \"{raw}\": {msg}"))
-                    })?;
+                    CSharpNamespace::new(raw.as_str())
+                        .map_err(|msg| meta.error(format!("invalid namespace \"{raw}\": {msg}")))?;
                     self.namespace = Some(raw);
                 }
                 return Ok(());
@@ -104,8 +103,7 @@ mod tests {
 
     #[test]
     fn parse_csharp_namespace() {
-        let attrs: Vec<Attribute> =
-            vec![parse_quote!(#[csharp(namespace = "PulsarAnvil.Types")])];
+        let attrs: Vec<Attribute> = vec![parse_quote!(#[csharp(namespace = "PulsarAnvil.Types")])];
         let container = ContainerAttr::from_attrs(&attrs).unwrap();
         assert_eq!(container.namespace.as_deref(), Some("PulsarAnvil.Types"));
     }

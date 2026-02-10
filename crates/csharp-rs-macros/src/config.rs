@@ -142,8 +142,7 @@ pub struct CSharpConfig {
 impl Default for CSharpConfig {
     fn default() -> Self {
         Self {
-            namespace: CSharpNamespace::new("Generated")
-                .expect("default namespace is valid"),
+            namespace: CSharpNamespace::new("Generated").expect("default namespace is valid"),
             serializer: Serializer::SystemTextJson,
             target: CSharpVersion::default(),
             export_dir: PathBuf::from("./csharp-bindings"),

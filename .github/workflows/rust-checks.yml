@@ -9,17 +9,26 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   check:
     name: Check, Lint & Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: rustfmt, clippy, llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Cache cargo registry & build
         uses: actions/cache@v4
@@ -38,5 +47,40 @@ jobs:
       - name: Run clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
-      - name: Run tests
-        run: cargo test --all
+      - name: Run tests with coverage
+        run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+
+      - name: Check global coverage threshold
+        id: global-threshold
+        continue-on-error: true
+        run: cargo llvm-cov report --fail-under-lines 98
+
+      - name: Diff coverage report
+        if: github.event_name == 'pull_request'
+        id: diff-coverage
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          chmod +x .github/scripts/diff-coverage.sh
+          .github/scripts/diff-coverage.sh \
+            lcov.info \
+            "${{ github.event.pull_request.base.sha }}" \
+            "${{ github.event.pull_request.number }}" \
+            98
+
+      - name: Coverage summary
+        if: always()
+        run: |
+          {
+            echo '## Coverage Report'
+            echo '```'
+            cargo llvm-cov report 2>/dev/null || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Enforce coverage thresholds
+        if: steps.global-threshold.outcome == 'failure' || steps.diff-coverage.outcome == 'failure'
+        run: |
+          echo "::error::Coverage threshold not met (minimum 98%)"
+          exit 1

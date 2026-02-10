@@ -246,3 +246,164 @@ fn dependencies_include_field_types() {
     assert!(deps.contains(&String::from("double")));
     assert!(deps.contains(&String::from("List<string>")));
 }
+
+// --- struct with field rename ---
+
+#[derive(CSharp)]
+struct WithFieldRename {
+    #[serde(rename = "userId")]
+    user_id: String,
+    level: i32,
+}
+
+#[test]
+fn field_rename_json_name() {
+    let def = WithFieldRename::csharp_definition();
+    assert!(
+        def.contains("[JsonPropertyName(\"userId\")]"),
+        "JSON name should be 'userId':\n{def}"
+    );
+    assert!(
+        def.contains("public string UserId { get; init; }"),
+        "C# property should be PascalCase UserId:\n{def}"
+    );
+    assert!(
+        def.contains("[JsonPropertyName(\"level\")]"),
+        "level should be unaffected:\n{def}"
+    );
+}
+
+// --- struct with field rename + container rename_all ---
+
+#[derive(CSharp)]
+#[serde(rename_all = "camelCase")]
+struct RenameOverride {
+    #[serde(rename = "ID")]
+    player_id: String,
+    display_name: String,
+}
+
+#[test]
+fn field_rename_overrides_rename_all() {
+    let def = RenameOverride::csharp_definition();
+    assert!(
+        def.contains("[JsonPropertyName(\"ID\")]"),
+        "field rename should override rename_all:\n{def}"
+    );
+    assert!(
+        def.contains("[JsonPropertyName(\"displayName\")]"),
+        "non-renamed field should use camelCase:\n{def}"
+    );
+}
+
+// --- struct with skip ---
+
+#[derive(CSharp)]
+struct WithSkip {
+    visible: String,
+    #[serde(skip)]
+    hidden: String,
+    also_visible: i32,
+}
+
+#[test]
+fn skip_excludes_field() {
+    let def = WithSkip::csharp_definition();
+    assert!(
+        def.contains("public string Visible { get; init; }"),
+        "visible field should be present:\n{def}"
+    );
+    assert!(
+        !def.contains("Hidden"),
+        "skipped field should be absent:\n{def}"
+    );
+    assert!(
+        def.contains("public int AlsoVisible { get; init; }"),
+        "also_visible field should be present:\n{def}"
+    );
+}
+
+// --- struct with skip_serializing ---
+
+#[derive(CSharp)]
+struct WithSkipSerializing {
+    visible: String,
+    #[serde(skip_serializing)]
+    write_only: String,
+}
+
+#[test]
+fn skip_serializing_excludes_field() {
+    let def = WithSkipSerializing::csharp_definition();
+    assert!(
+        def.contains("public string Visible { get; init; }"),
+        "visible field should be present:\n{def}"
+    );
+    assert!(
+        !def.contains("WriteOnly"),
+        "skip_serializing field should be absent:\n{def}"
+    );
+}
+
+// --- struct with skip_serializing_if ---
+
+#[derive(CSharp)]
+struct WithSkipSerializingIf {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    nickname: Option<String>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    tag: String,
+}
+
+#[test]
+fn skip_serializing_if_forces_nullable() {
+    let def = WithSkipSerializingIf::csharp_definition();
+    assert!(
+        def.contains("public string Name { get; init; }"),
+        "name should be required:\n{def}"
+    );
+    assert!(
+        def.contains("public string? Nickname { get; init; }"),
+        "nickname should be nullable (Option + skip_serializing_if):\n{def}"
+    );
+    assert!(
+        def.contains("public string? Tag { get; init; }"),
+        "tag should be forced nullable by skip_serializing_if:\n{def}"
+    );
+}
+
+// --- combined field attrs ---
+
+#[derive(CSharp)]
+#[serde(rename_all = "camelCase")]
+struct CombinedFieldAttrs {
+    #[serde(rename = "id")]
+    player_id: String,
+    #[serde(skip)]
+    internal: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bio: Option<String>,
+    display_name: String,
+}
+
+#[test]
+fn combined_field_attrs() {
+    let def = CombinedFieldAttrs::csharp_definition();
+    assert!(
+        def.contains("[JsonPropertyName(\"id\")]"),
+        "player_id should be renamed to 'id':\n{def}"
+    );
+    assert!(
+        !def.contains("Internal"),
+        "internal should be skipped:\n{def}"
+    );
+    assert!(
+        def.contains("public string? Bio { get; init; }"),
+        "bio should be nullable:\n{def}"
+    );
+    assert!(
+        def.contains("[JsonPropertyName(\"displayName\")]"),
+        "display_name should use camelCase:\n{def}"
+    );
+}

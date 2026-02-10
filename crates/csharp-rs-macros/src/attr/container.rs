@@ -57,34 +57,31 @@ impl ContainerAttr {
 
     fn parse_csharp(&mut self, attr: &Attribute) -> syn::Result<()> {
         attr.parse_nested_meta(|meta| {
-            if meta.path.is_ident("namespace") {
-                let value = meta.value()?;
-                let lit: Lit = value.parse()?;
-                if let Lit::Str(ref lit_str) = lit {
-                    let raw = lit_str.value();
-                    CSharpNamespace::new(raw.as_str())
-                        .map_err(|msg| meta.error(format!("invalid namespace \"{raw}\": {msg}")))?;
-                    self.namespace = Some(raw);
+            let ident = meta.path.get_ident().map(ToString::to_string);
+            match ident.as_deref() {
+                Some("namespace") => {
+                    let value = meta.value()?;
+                    let lit: Lit = value.parse()?;
+                    if let Lit::Str(ref lit_str) = lit {
+                        let raw = lit_str.value();
+                        CSharpNamespace::new(raw.as_str()).map_err(|msg| {
+                            meta.error(format!("invalid namespace \"{raw}\": {msg}"))
+                        })?;
+                        self.namespace = Some(raw);
+                    }
                 }
-                return Ok(());
-            }
-
-            if meta.path.is_ident("export") {
-                self.export = true;
-                return Ok(());
-            }
-
-            if meta.path.is_ident("export_to") {
-                let value = meta.value()?;
-                let lit: Lit = value.parse()?;
-                if let Lit::Str(lit_str) = lit {
-                    self.export_to = Some(lit_str.value());
-                    self.export = true;
+                Some("export") => self.export = true,
+                Some("export_to") => {
+                    let value = meta.value()?;
+                    let lit: Lit = value.parse()?;
+                    if let Lit::Str(lit_str) = lit {
+                        self.export_to = Some(lit_str.value());
+                        self.export = true;
+                    }
                 }
-                return Ok(());
+                _ => return Err(meta.error("unrecognized csharp attribute")),
             }
-
-            Err(meta.error("unrecognized csharp attribute"))
+            Ok(())
         })
     }
 }

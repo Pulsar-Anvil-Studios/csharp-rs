@@ -29,10 +29,11 @@ pub fn named_struct(
     // Use the Rust ident directly; struct names are already PascalCase by convention.
     let csharp_name = rust_ident.to_string();
 
+    // Namespace: use container override if present, otherwise config default.
+    // ContainerAttr::parse_csharp already validated the namespace string.
     let namespace = match &container.namespace {
-        Some(ns) => CSharpNamespace::new(ns.as_str()).map_err(|msg| {
-            syn::Error::new_spanned(&input.ident, format!("csharp-rs: invalid namespace: {msg}"))
-        })?,
+        Some(ns) => CSharpNamespace::new(ns.as_str())
+            .expect("namespace was validated in ContainerAttr::parse_csharp"),
         None => config.namespace.clone(),
     };
 
@@ -196,6 +197,42 @@ mod tests {
         let ty: Type = parse_quote!(i32);
         let (is_optional, _) = analyze_type(&ty);
         assert!(!is_optional);
+    }
+
+    #[test]
+    fn extract_option_returns_none_for_reference() {
+        let ty: Type = parse_quote!(&str);
+        assert!(extract_option_inner(&ty).is_none());
+    }
+
+    #[test]
+    fn extract_option_returns_none_for_bare_option() {
+        let ty: Type = parse_quote!(Option);
+        assert!(extract_option_inner(&ty).is_none());
+    }
+
+    #[test]
+    fn extract_option_returns_none_for_multi_arg() {
+        let ty: Type = parse_quote!(Option<A, B>);
+        assert!(extract_option_inner(&ty).is_none());
+    }
+
+    #[test]
+    fn extract_option_returns_none_for_lifetime_arg() {
+        let ty: Type = parse_quote!(Option<'a>);
+        assert!(extract_option_inner(&ty).is_none());
+    }
+
+    #[test]
+    fn named_struct_with_namespace_override() {
+        let input: DeriveInput = parse_quote! {
+            #[csharp(namespace = "Custom.Namespace")]
+            struct Foo {
+                x: i32,
+            }
+        };
+        let ir = process_named(&input);
+        assert_eq!(ir.namespace.as_ref(), "Custom.Namespace");
     }
 
     #[test]

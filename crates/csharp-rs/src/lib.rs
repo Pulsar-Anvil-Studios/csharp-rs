@@ -229,10 +229,7 @@ mod tests {
 
     #[test]
     fn nested_generics() {
-        assert_eq!(
-            <Vec<Option<i32>>>::csharp_name(),
-            "List<int>"
-        );
+        assert_eq!(<Vec<Option<i32>>>::csharp_name(), "List<int>");
         assert_eq!(
             <HashMap<String, Vec<f64>>>::csharp_name(),
             "Dictionary<string, List<double>>"

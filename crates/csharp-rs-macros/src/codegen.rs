@@ -135,10 +135,10 @@ impl DerivedCSharp {
         let test_name = quote::format_ident!("export_csharp_{}", ident.to_string().to_lowercase());
         let csharp_name = &self.csharp_name;
 
-        let export_dir = self.export_to.as_ref().map_or_else(
-            || config.export_dir.display().to_string(),
-            Clone::clone,
-        );
+        let export_dir = self
+            .export_to
+            .as_ref()
+            .map_or_else(|| config.export_dir.display().to_string(), Clone::clone);
 
         let file_path = format!("{export_dir}/{csharp_name}.cs");
 

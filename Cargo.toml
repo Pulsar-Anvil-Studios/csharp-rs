@@ -1,9 +1,6 @@
 [workspace]
 resolver = "2"
-members = [
-    "crates/csharp-rs",
-    "crates/csharp-rs-macros",
-]
+members = ["crates/csharp-rs", "crates/csharp-rs-macros"]
 
 [workspace.package]
 edition = "2024"
@@ -21,7 +18,7 @@ quote = "1.0.44"
 proc-macro2 = "1.0.106"
 
 # Configuration parsing
-toml = "0.9"
+toml = "0.9.12"
 
 [workspace.lints.rust]
 ambiguous_negative_literals = "warn"

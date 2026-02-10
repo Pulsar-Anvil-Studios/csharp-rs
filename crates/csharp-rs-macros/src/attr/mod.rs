@@ -104,6 +104,22 @@ fn capitalize(word: &str) -> String {
     }
 }
 
+/// Converts a `PascalCase` name to `snake_case` for inflection processing.
+///
+/// Splits on uppercase boundaries: each uppercase letter (after position 0)
+/// introduces an underscore separator.
+#[must_use]
+pub fn from_pascal_to_snake(name: &str) -> String {
+    let mut result = String::new();
+    for (i, c) in name.chars().enumerate() {
+        if c.is_uppercase() && i > 0 {
+            result.push('_');
+        }
+        result.extend(c.to_lowercase());
+    }
+    result
+}
+
 /// Converts a Rust `snake_case` name to `PascalCase`.
 #[must_use]
 pub fn to_pascal_case(name: &str) -> String {
@@ -201,5 +217,24 @@ mod tests {
     fn to_pascal_case_works() {
         assert_eq!(to_pascal_case("player_profile"), "PlayerProfile");
         assert_eq!(to_pascal_case("id"), "Id");
+    }
+
+    #[test]
+    fn from_pascal_to_snake_multi_word() {
+        assert_eq!(from_pascal_to_snake("AlreadyDone"), "already_done");
+        assert_eq!(from_pascal_to_snake("InProgress"), "in_progress");
+        assert_eq!(from_pascal_to_snake("UserLogin"), "user_login");
+    }
+
+    #[test]
+    fn from_pascal_to_snake_single_word() {
+        assert_eq!(from_pascal_to_snake("Red"), "red");
+        assert_eq!(from_pascal_to_snake("Blue"), "blue");
+    }
+
+    #[test]
+    fn from_pascal_to_snake_already_lowercase() {
+        assert_eq!(from_pascal_to_snake("red"), "red");
+        assert_eq!(from_pascal_to_snake("hello"), "hello");
     }
 }

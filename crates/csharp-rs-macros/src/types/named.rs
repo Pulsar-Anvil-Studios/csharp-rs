@@ -39,7 +39,12 @@ pub fn named_struct(
     let mut fields = Vec::new();
 
     for field in &named.named {
-        let _field_attr = FieldAttr::from_attrs(&field.attrs)?;
+        let field_attr = FieldAttr::from_attrs(&field.attrs)?;
+
+        // Skip fields marked with serde(skip) or serde(skip_serializing)
+        if field_attr.skip {
+            continue;
+        }
 
         let field_ident = field
             .ident
@@ -47,17 +52,22 @@ pub fn named_struct(
             .expect("named fields always have identifiers");
         let field_name = field_ident.to_string();
 
-        // JSON name: apply serde rename_all if present, otherwise use raw field name
-        let json_name = container.rename_all.map_or_else(
-            || field_name.clone(),
-            |inflection| inflection.apply(&field_name),
-        );
+        // JSON name: field rename overrides container rename_all
+        let json_name = if let Some(ref renamed) = field_attr.rename {
+            renamed.clone()
+        } else {
+            container.rename_all.map_or_else(
+                || field_name.clone(),
+                |inflection| inflection.apply(&field_name),
+            )
+        };
 
         // C# property name: always PascalCase
         let csharp_property_name = to_pascal_case(&field_name);
 
-        // Determine if the type is Option<T> and extract the inner type
+        // Type analysis — skip_serializing_if forces nullable
         let (is_optional, type_expr) = analyze_type(&field.ty);
+        let is_optional = is_optional || field_attr.skip_serializing_if;
 
         fields.push(CSharpField {
             csharp_property_name,
@@ -129,6 +139,22 @@ mod tests {
     use super::*;
     use syn::parse_quote;
 
+    fn default_config() -> CSharpConfig {
+        CSharpConfig::default()
+    }
+
+    fn process_named(input: &DeriveInput) -> DerivedCSharp {
+        let container = ContainerAttr::from_attrs(&input.attrs).unwrap();
+        let syn::Data::Struct(syn::DataStruct {
+            fields: syn::Fields::Named(ref named),
+            ..
+        }) = input.data
+        else {
+            panic!("expected named struct");
+        };
+        named_struct(input, named, &container, &default_config()).unwrap()
+    }
+
     #[test]
     fn extract_option_returns_inner_type() {
         let ty: Type = parse_quote!(Option<i32>);
@@ -170,5 +196,80 @@ mod tests {
         let ty: Type = parse_quote!(i32);
         let (is_optional, _) = analyze_type(&ty);
         assert!(!is_optional);
+    }
+
+    #[test]
+    fn field_rename_overrides_json_name() {
+        let input: DeriveInput = parse_quote! {
+            struct Foo {
+                #[serde(rename = "userId")]
+                user_id: String,
+                level: i32,
+            }
+        };
+        let ir = process_named(&input);
+        assert_eq!(ir.fields[0].json_name, "userId");
+        assert_eq!(ir.fields[0].csharp_property_name, "UserId");
+        assert_eq!(ir.fields[1].json_name, "level");
+    }
+
+    #[test]
+    fn field_rename_with_rename_all() {
+        let input: DeriveInput = parse_quote! {
+            #[serde(rename_all = "camelCase")]
+            struct Foo {
+                #[serde(rename = "ID")]
+                player_id: String,
+                display_name: String,
+            }
+        };
+        let ir = process_named(&input);
+        assert_eq!(ir.fields[0].json_name, "ID");
+        assert_eq!(ir.fields[1].json_name, "displayName");
+    }
+
+    #[test]
+    fn field_skip_excludes_field() {
+        let input: DeriveInput = parse_quote! {
+            struct Foo {
+                visible: String,
+                #[serde(skip)]
+                hidden: String,
+                also_visible: i32,
+            }
+        };
+        let ir = process_named(&input);
+        assert_eq!(ir.fields.len(), 2);
+        assert_eq!(ir.fields[0].csharp_property_name, "Visible");
+        assert_eq!(ir.fields[1].csharp_property_name, "AlsoVisible");
+    }
+
+    #[test]
+    fn field_skip_serializing_excludes_field() {
+        let input: DeriveInput = parse_quote! {
+            struct Foo {
+                visible: String,
+                #[serde(skip_serializing)]
+                write_only: String,
+            }
+        };
+        let ir = process_named(&input);
+        assert_eq!(ir.fields.len(), 1);
+        assert_eq!(ir.fields[0].csharp_property_name, "Visible");
+    }
+
+    #[test]
+    fn field_skip_serializing_if_forces_nullable() {
+        let input: DeriveInput = parse_quote! {
+            struct Foo {
+                name: String,
+                #[serde(skip_serializing_if = "String::is_empty")]
+                tag: String,
+            }
+        };
+        let ir = process_named(&input);
+        assert_eq!(ir.fields.len(), 2);
+        assert!(!ir.fields[0].is_optional, "name should not be optional");
+        assert!(ir.fields[1].is_optional, "tag should be forced optional");
     }
 }

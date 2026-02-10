@@ -9,7 +9,7 @@ use crate::attr::container::ContainerAttr;
 use crate::attr::field::FieldAttr;
 use crate::attr::to_pascal_case;
 use crate::config::{CSharpConfig, CSharpNamespace};
-use crate::types::{CSharpField, DerivedCSharp};
+use crate::types::{CSharpField, DerivedCSharp, DerivedCSharpKind};
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{DeriveInput, FieldsNamed, GenericArgument, PathArguments, Type, TypePath};
@@ -82,7 +82,7 @@ pub fn named_struct(
         rust_ident,
         csharp_name,
         namespace,
-        fields,
+        kind: DerivedCSharpKind::Record(fields),
         export: container.export,
         export_to: container.export_to.clone(),
     })
@@ -154,6 +154,13 @@ mod tests {
             panic!("expected named struct");
         };
         named_struct(input, named, &container, &default_config()).unwrap()
+    }
+
+    fn extract_fields(ir: &DerivedCSharp) -> &[CSharpField] {
+        match &ir.kind {
+            DerivedCSharpKind::Record(fields) => fields,
+            DerivedCSharpKind::Enum(_) => panic!("expected Record kind"),
+        }
     }
 
     #[test]
@@ -245,9 +252,10 @@ mod tests {
             }
         };
         let ir = process_named(&input);
-        assert_eq!(ir.fields[0].json_name, "userId");
-        assert_eq!(ir.fields[0].csharp_property_name, "UserId");
-        assert_eq!(ir.fields[1].json_name, "level");
+        let fields = extract_fields(&ir);
+        assert_eq!(fields[0].json_name, "userId");
+        assert_eq!(fields[0].csharp_property_name, "UserId");
+        assert_eq!(fields[1].json_name, "level");
     }
 
     #[test]
@@ -261,8 +269,9 @@ mod tests {
             }
         };
         let ir = process_named(&input);
-        assert_eq!(ir.fields[0].json_name, "ID");
-        assert_eq!(ir.fields[1].json_name, "displayName");
+        let fields = extract_fields(&ir);
+        assert_eq!(fields[0].json_name, "ID");
+        assert_eq!(fields[1].json_name, "displayName");
     }
 
     #[test]
@@ -276,9 +285,10 @@ mod tests {
             }
         };
         let ir = process_named(&input);
-        assert_eq!(ir.fields.len(), 2);
-        assert_eq!(ir.fields[0].csharp_property_name, "Visible");
-        assert_eq!(ir.fields[1].csharp_property_name, "AlsoVisible");
+        let fields = extract_fields(&ir);
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields[0].csharp_property_name, "Visible");
+        assert_eq!(fields[1].csharp_property_name, "AlsoVisible");
     }
 
     #[test]
@@ -291,8 +301,9 @@ mod tests {
             }
         };
         let ir = process_named(&input);
-        assert_eq!(ir.fields.len(), 1);
-        assert_eq!(ir.fields[0].csharp_property_name, "Visible");
+        let fields = extract_fields(&ir);
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].csharp_property_name, "Visible");
     }
 
     #[test]
@@ -305,8 +316,9 @@ mod tests {
             }
         };
         let ir = process_named(&input);
-        assert_eq!(ir.fields.len(), 2);
-        assert!(!ir.fields[0].is_optional, "name should not be optional");
-        assert!(ir.fields[1].is_optional, "tag should be forced optional");
+        let fields = extract_fields(&ir);
+        assert_eq!(fields.len(), 2);
+        assert!(!fields[0].is_optional, "name should not be optional");
+        assert!(fields[1].is_optional, "tag should be forced optional");
     }
 }

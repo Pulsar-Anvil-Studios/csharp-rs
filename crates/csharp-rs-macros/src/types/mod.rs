@@ -5,6 +5,7 @@
 //! Rust data structure kind (struct with named fields, enum, etc.).
 
 pub mod named;
+pub mod simple_enum;
 
 use crate::attr::container::ContainerAttr;
 use crate::config::{CSharpConfig, CSharpNamespace};
@@ -24,6 +25,24 @@ pub struct CSharpField {
     pub is_optional: bool,
 }
 
+/// A C# enum variant in the intermediate representation.
+#[derive(Debug)]
+pub struct CSharpVariant {
+    /// C# variant name (used as-is from the Rust variant, already `PascalCase`).
+    pub csharp_name: String,
+    /// JSON serialization name (after `rename_all` or per-variant `rename`).
+    pub json_name: String,
+}
+
+/// The kind of C# type being generated.
+#[derive(Debug)]
+pub enum DerivedCSharpKind {
+    /// A `sealed record` with properties (from a Rust struct with named fields).
+    Record(Vec<CSharpField>),
+    /// A `public enum` with unit variants (from a Rust enum).
+    Enum(Vec<CSharpVariant>),
+}
+
 /// Intermediate representation for a derived C# type.
 #[derive(Debug)]
 pub struct DerivedCSharp {
@@ -33,8 +52,8 @@ pub struct DerivedCSharp {
     pub csharp_name: String,
     /// C# namespace (from config or attribute override).
     pub namespace: CSharpNamespace,
-    /// The fields of the C# type.
-    pub fields: Vec<CSharpField>,
+    /// The kind of C# type and its contents.
+    pub kind: DerivedCSharpKind,
     /// Whether to generate an export test.
     pub export: bool,
     /// Custom export path (overrides config default).
@@ -71,10 +90,7 @@ pub fn process_input(input: &DeriveInput, config: &CSharpConfig) -> syn::Result<
             "csharp-rs: unit structs are not yet supported",
         )),
 
-        Data::Enum(_) => Err(syn::Error::new_spanned(
-            &input.ident,
-            "csharp-rs: enums are not yet supported",
-        )),
+        Data::Enum(enum_data) => simple_enum::simple_enum(input, enum_data, &container, config),
 
         Data::Union(_) => Err(syn::Error::new_spanned(
             &input.ident,
@@ -103,7 +119,10 @@ mod tests {
         assert!(result.is_ok());
         let ir = result.unwrap();
         assert_eq!(ir.csharp_name, "Foo");
-        assert_eq!(ir.fields.len(), 1);
+        match &ir.kind {
+            DerivedCSharpKind::Record(fields) => assert_eq!(fields.len(), 1),
+            DerivedCSharpKind::Enum(_) => panic!("expected Record kind"),
+        }
     }
 
     #[test]
@@ -135,7 +154,7 @@ mod tests {
     }
 
     #[test]
-    fn enum_errors() {
+    fn unit_enum_succeeds() {
         let input: DeriveInput = parse_quote! {
             enum Color {
                 Red,
@@ -144,11 +163,29 @@ mod tests {
             }
         };
         let result = process_input(&input, &default_config());
+        assert!(result.is_ok());
+        let ir = result.unwrap();
+        assert_eq!(ir.csharp_name, "Color");
+        match &ir.kind {
+            DerivedCSharpKind::Enum(variants) => assert_eq!(variants.len(), 3),
+            DerivedCSharpKind::Record(_) => panic!("expected Enum kind"),
+        }
+    }
+
+    #[test]
+    fn enum_with_tuple_variant_errors() {
+        let input: DeriveInput = parse_quote! {
+            enum Message {
+                Quit,
+                Data(String),
+            }
+        };
+        let result = process_input(&input, &default_config());
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
-            err.contains("enums are not yet supported"),
-            "error should mention enums: {err}"
+            err.contains("only unit variants"),
+            "error should mention unit variants: {err}"
         );
     }
 

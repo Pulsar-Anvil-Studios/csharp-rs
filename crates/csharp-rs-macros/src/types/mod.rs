@@ -37,7 +37,7 @@ pub struct CSharpVariant {
 
 /// How the enum is tagged in JSON (from serde attributes).
 #[derive(Debug)]
-#[allow(dead_code, reason = "constructed in tagged_enum builder (Task 3)")]
+#[allow(dead_code, reason = "fields read by codegen (Task 5+)")]
 pub enum EnumTagging {
     /// Default serde: `{"VariantName": data}` / `"UnitVariant"`.
     External,
@@ -51,7 +51,7 @@ pub enum EnumTagging {
 
 /// Data carried by a variant in a tagged enum.
 #[derive(Debug)]
-#[allow(dead_code, reason = "constructed in tagged_enum builder (Task 3)")]
+#[allow(dead_code, reason = "fields read by codegen (Task 5+)")]
 pub enum TaggedVariantData {
     /// No data (unit variant).
     Unit,
@@ -63,7 +63,7 @@ pub enum TaggedVariantData {
 
 /// A variant in a tagged enum.
 #[derive(Debug)]
-#[allow(dead_code, reason = "constructed in tagged_enum builder (Task 3)")]
+#[allow(dead_code, reason = "fields read by codegen (Task 5+)")]
 pub struct TaggedVariant {
     /// C# record name (`PascalCase`, from Rust variant ident).
     pub csharp_name: String,
@@ -81,7 +81,7 @@ pub enum DerivedCSharpKind {
     /// A `public enum` with unit variants (from a Rust enum).
     Enum(Vec<CSharpVariant>),
     /// A tagged enum hierarchy (from a Rust enum with data variants).
-    #[allow(dead_code, reason = "constructed in tagged_enum builder (Task 3)")]
+    #[allow(dead_code, reason = "fields read by codegen (Task 5+)")]
     TaggedEnum {
         /// The tagging strategy derived from serde attributes.
         tagging: EnumTagging,
@@ -230,18 +230,54 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "tagged_enum IR builder")]
-    fn enum_with_tuple_variant_routes_to_tagged_enum() {
-        // With the new dispatch, an enum with data variants routes to
-        // `tagged_enum` which is currently `todo!()`. Task 3 will replace
-        // this test with proper error handling validation.
+    fn enum_with_struct_variant_and_tag_succeeds() {
         let input: DeriveInput = parse_quote! {
+            #[serde(tag = "type")]
             enum Message {
+                Request { id: String },
                 Quit,
-                Data(String),
             }
         };
-        let _ = process_input(&input, &default_config());
+        let result = process_input(&input, &default_config());
+        assert!(result.is_ok());
+        let ir = result.unwrap();
+        assert_eq!(ir.csharp_name, "Message");
+        assert!(matches!(ir.kind, DerivedCSharpKind::TaggedEnum { .. }));
+    }
+
+    #[test]
+    fn enum_with_data_variant_no_tag_defaults_to_external() {
+        let input: DeriveInput = parse_quote! {
+            enum Message {
+                Text(String),
+                Quit,
+            }
+        };
+        let result = process_input(&input, &default_config());
+        assert!(result.is_ok());
+        match &result.unwrap().kind {
+            DerivedCSharpKind::TaggedEnum { tagging, .. } => {
+                assert!(matches!(tagging, EnumTagging::External));
+            }
+            _ => panic!("expected TaggedEnum kind"),
+        }
+    }
+
+    #[test]
+    fn enum_with_multi_field_tuple_variant_errors() {
+        let input: DeriveInput = parse_quote! {
+            #[serde(tag = "type")]
+            enum Message {
+                Data(String, i32),
+            }
+        };
+        let result = process_input(&input, &default_config());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("tuple variants"),
+            "error should mention tuple variants: {err}"
+        );
     }
 
     #[test]
@@ -262,18 +298,20 @@ mod tests {
     }
 
     #[test]
-    fn enum_with_struct_variant_and_tag_routes_to_tagged() {
-        // Verify the dispatch condition: an enum with `#[serde(tag = "type")]`
-        // has `container.tag` set, which triggers the tagged enum path.
-        // We cannot test the full output yet because `tagged_enum()` is `todo!()`.
+    fn all_unit_with_tag_becomes_tagged_enum() {
         let input: DeriveInput = parse_quote! {
             #[serde(tag = "type")]
-            enum Message {
-                Quit,
+            enum Status {
+                Active,
+                Inactive,
             }
         };
-        let container = ContainerAttr::from_attrs(&input.attrs).unwrap();
-        assert!(container.tag.is_some());
+        let result = process_input(&input, &default_config());
+        assert!(result.is_ok());
+        assert!(matches!(
+            result.unwrap().kind,
+            DerivedCSharpKind::TaggedEnum { .. }
+        ));
     }
 
     #[test]

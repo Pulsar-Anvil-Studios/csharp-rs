@@ -1108,4 +1108,221 @@ mod tests {
             "Newtonsoft external Write should use WriteValue for unit variants:\n{tokens}"
         );
     }
+
+    // --- Adjacently tagged enum test helpers ---
+
+    /// Builds an adjacently tagged enum IR with `tag = "t"`, `content = "c"`,
+    /// a struct variant (`Request`), a newtype variant (`Text`), and a unit
+    /// variant (`Quit`).
+    fn sample_adjacent_tagged_enum_ir() -> DerivedCSharp {
+        DerivedCSharp {
+            rust_ident: quote::format_ident!("Message"),
+            csharp_name: String::from("Message"),
+            namespace: CSharpNamespace::new("Test.Ns").unwrap(),
+            kind: DerivedCSharpKind::TaggedEnum {
+                tagging: EnumTagging::Adjacent {
+                    tag: String::from("t"),
+                    content: String::from("c"),
+                },
+                variants: vec![
+                    TaggedVariant {
+                        csharp_name: String::from("Request"),
+                        json_name: String::from("Request"),
+                        data: TaggedVariantData::Struct(vec![CSharpField {
+                            csharp_property_name: String::from("Id"),
+                            json_name: String::from("id"),
+                            type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                            is_optional: false,
+                        }]),
+                    },
+                    TaggedVariant {
+                        csharp_name: String::from("Text"),
+                        json_name: String::from("Text"),
+                        data: TaggedVariantData::Newtype {
+                            type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                        },
+                    },
+                    TaggedVariant {
+                        csharp_name: String::from("Quit"),
+                        json_name: String::from("Quit"),
+                        data: TaggedVariantData::Unit,
+                    },
+                ],
+            },
+            export: false,
+            export_to: None,
+        }
+    }
+
+    // --- Adjacently tagged converter tests ---
+
+    #[test]
+    fn adjacent_stj_has_converter() {
+        let config = stj_config();
+        let ir = sample_adjacent_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        assert!(
+            tokens.contains("JsonConverter"),
+            "adjacently tagged STJ should have [JsonConverter] attribute:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("MessageConverter"),
+            "adjacently tagged STJ should reference MessageConverter:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("private sealed class"),
+            "adjacently tagged STJ should generate converter class:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn adjacent_stj_read_uses_tag_property() {
+        let config = stj_config();
+        let ir = sample_adjacent_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        assert!(
+            tokens.contains("GetProperty"),
+            "STJ adjacent Read should call GetProperty for tag:\n{tokens}"
+        );
+        // The format template should reference the tag key `t`.
+        assert!(
+            tokens.contains(r#"tag = "t""#),
+            "STJ adjacent Read should bind tag key to \"t\":\n{tokens}"
+        );
+        assert!(
+            tokens.contains("return tag switch"),
+            "STJ adjacent Read should contain tag switch:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn adjacent_stj_read_struct_uses_content() {
+        let config = stj_config();
+        let ir = sample_adjacent_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        // Struct variant should access content element.
+        assert!(
+            tokens.contains("contentElement"),
+            "STJ adjacent Read struct variant should use contentElement:\n{tokens}"
+        );
+        assert!(
+            tokens.contains(r#"content = "c""#),
+            "STJ adjacent Read should bind content key to \"c\":\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn adjacent_stj_write_unit_no_content() {
+        let config = stj_config();
+        let ir = sample_adjacent_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        // The unit variant Write arm should have WriteString for tag but NOT
+        // contain the content key in the same case block. We check the unit
+        // arm specifically: `case Quit:` followed by WriteStartObject,
+        // WriteString (tag), WriteEndObject, break — no content property.
+        assert!(
+            tokens.contains("case Quit"),
+            "STJ adjacent Write should have case Quit:\n{tokens}"
+        );
+
+        // Extract the Quit case block to verify no content key.
+        let quit_section = tokens
+            .split("case Quit")
+            .nth(1)
+            .and_then(|s| s.split("break;").next())
+            .unwrap_or("");
+        assert!(
+            !quit_section.contains(r#"WritePropertyName(\"c\")"#),
+            "STJ adjacent Write unit variant should NOT write content key:\n{quit_section}"
+        );
+    }
+
+    #[test]
+    fn adjacent_stj_write_data_has_content() {
+        let config = stj_config();
+        let ir = sample_adjacent_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        // Data variants (newtype/struct) should write both tag and content.
+        assert!(
+            tokens.contains("WriteStartObject"),
+            "STJ adjacent Write should write outer object:\n{tokens}"
+        );
+        // The content property key should appear in the output.
+        assert!(
+            tokens.contains(r#"content = "c""#),
+            "STJ adjacent Write data variants should reference content key:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn adjacent_newtonsoft_has_converter() {
+        let config = newtonsoft_config();
+        let ir = sample_adjacent_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        assert!(
+            tokens.contains("JsonConverter"),
+            "adjacently tagged Newtonsoft should have [JsonConverter] attribute:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("MessageConverter"),
+            "adjacently tagged Newtonsoft should reference MessageConverter:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("Newtonsoft.Json"),
+            "adjacently tagged Newtonsoft should have using directive:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn adjacent_newtonsoft_read_uses_jobj() {
+        let config = newtonsoft_config();
+        let ir = sample_adjacent_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        assert!(
+            tokens.contains("JObject.Load"),
+            "Newtonsoft adjacent Read should use JObject.Load:\n{tokens}"
+        );
+        // Tag access: `(string)obj["t"]`
+        assert!(
+            tokens.contains(r#"tag = "t""#),
+            "Newtonsoft adjacent Read should bind tag key to \"t\":\n{tokens}"
+        );
+        // Content access for newtype/struct variants.
+        assert!(
+            tokens.contains(r#"content = "c""#),
+            "Newtonsoft adjacent Read should bind content key to \"c\":\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn adjacent_newtonsoft_write_unit_only_tag() {
+        let config = newtonsoft_config();
+        let ir = sample_adjacent_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        // The unit variant Write arm should have WritePropertyName for tag
+        // and WriteValue for the variant name, but no content key.
+        assert!(
+            tokens.contains("case Quit"),
+            "Newtonsoft adjacent Write should have case Quit:\n{tokens}"
+        );
+
+        // Extract the Quit case block to verify no content key.
+        let quit_section = tokens
+            .split("case Quit")
+            .nth(1)
+            .and_then(|s| s.split("break;").next())
+            .unwrap_or("");
+        assert!(
+            !quit_section.contains(r#"WritePropertyName(\"c\")"#),
+            "Newtonsoft adjacent Write unit variant should NOT write content key:\n{quit_section}"
+        );
+    }
 }

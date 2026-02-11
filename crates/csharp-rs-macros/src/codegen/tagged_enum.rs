@@ -1,6 +1,6 @@
 // Rust guideline compliant 2026-02-11
-//! Tagged enum code generation (internally, adjacently, externally tagged,
-//! and untagged).
+//! Tagged enum code generation (internally, adjacently, externally tagged, and
+//! untagged).
 //!
 //! Generates C# abstract record type hierarchies with sealed derived records.
 //! Dispatches to the appropriate code generation strategy based on the
@@ -343,8 +343,32 @@ fn build_converter_block(
                 )),
             }
         }
-        EnumTagging::Adjacent { .. } | EnumTagging::Untagged => {
-            todo!("converter generation for adjacent and untagged modes")
+        EnumTagging::Adjacent { tag, content } => {
+            let base_indent = if use_file_scoped_ns {
+                "    "
+            } else {
+                "        "
+            };
+
+            match config.serializer {
+                Serializer::SystemTextJson => Some(build_adjacent_stj_converter(
+                    csharp_name,
+                    tag,
+                    content,
+                    variants,
+                    base_indent,
+                )),
+                Serializer::Newtonsoft => Some(build_adjacent_newtonsoft_converter(
+                    csharp_name,
+                    tag,
+                    content,
+                    variants,
+                    base_indent,
+                )),
+            }
+        }
+        EnumTagging::Untagged => {
+            todo!("converter generation for untagged mode")
         }
     }
 }
@@ -1435,6 +1459,614 @@ fn build_external_newtonsoft_write_struct_arm(
         "{case_indent}case {csharp_name} {var_name}:\n\
          {body_indent}writer.WriteStartObject();\n\
          {body_indent}writer.WritePropertyName(\"{json_name}\");\n\
+         {body_indent}writer.WriteStartObject();\n\
+         {fields_block}\n\
+         {body_indent}writer.WriteEndObject();\n\
+         {body_indent}writer.WriteEndObject();\n\
+         {body_indent}break;",
+    );
+
+    quote! { String::from(#arm) }
+}
+
+/// Builds the STJ `JsonConverter<T>` for adjacently tagged enums.
+///
+/// Adjacent tagging uses `#[serde(tag = "...", content = "...")]` where the
+/// discriminator and payload are sibling properties in a flat object. Unit
+/// variants omit the content key entirely. Newtype variants place the value
+/// directly under the content key. Struct variants nest their fields inside
+/// the content object.
+fn build_adjacent_stj_converter(
+    csharp_name: &str,
+    tag: &str,
+    content: &str,
+    variants: &[TaggedVariant],
+    base_indent: &str,
+) -> TokenStream {
+    let inner = format!("{base_indent}    ");
+    let inner2 = format!("{inner}    ");
+    let inner3 = format!("{inner2}    ");
+    let inner4 = format!("{inner3}    ");
+
+    let read_arms: Vec<TokenStream> = variants
+        .iter()
+        .map(|v| build_adjacent_stj_read_arm(v, content, &inner3, &inner4))
+        .collect();
+
+    let write_arms: Vec<TokenStream> = variants
+        .iter()
+        .map(|v| build_adjacent_stj_write_arm(v, tag, content, &inner3, &inner4))
+        .collect();
+
+    quote! {
+        {
+            let mut read_parts: Vec<String> = Vec::new();
+            #(read_parts.push(#read_arms);)*
+
+            let mut write_parts: Vec<String> = Vec::new();
+            #(write_parts.push(#write_arms);)*
+
+            let read_block = read_parts.join("\n");
+            let write_block = write_parts.join("\n");
+
+            format!(
+                "\n\
+                 {base}private sealed class {name}Converter : JsonConverter<{name}>\n\
+                 {base}{{\n\
+                 {i1}public override {name} Read(\n\
+                 {i2}ref Utf8JsonReader reader,\n\
+                 {i2}Type typeToConvert,\n\
+                 {i2}JsonSerializerOptions options)\n\
+                 {i1}{{\n\
+                 {i2}using var doc = JsonDocument.ParseValue(ref reader);\n\
+                 {i2}var root = doc.RootElement;\n\
+                 {i2}var tag = root.GetProperty(\"{tag}\").GetString();\n\
+                 \n\
+                 {i2}return tag switch\n\
+                 {i2}{{\n\
+                 {read}\n\
+                 {i2}    _ => throw new JsonException($\"Unknown discriminator value: {{tag}}\")\n\
+                 {i2}}};\n\
+                 {i1}}}\n\
+                 \n\
+                 {i1}public override void Write(\n\
+                 {i2}Utf8JsonWriter writer,\n\
+                 {i2}{name} value,\n\
+                 {i2}JsonSerializerOptions options)\n\
+                 {i1}{{\n\
+                 {i2}switch (value)\n\
+                 {i2}{{\n\
+                 {write}\n\
+                 {i2}}}\n\
+                 {i1}}}\n\
+                 {base}}}",
+                base = #base_indent,
+                name = #csharp_name,
+                i1 = #inner,
+                i2 = #inner2,
+                tag = #tag,
+                read = read_block,
+                write = write_block,
+            )
+        }
+    }
+}
+
+/// Builds a single STJ Read switch arm for a variant in adjacent tagging.
+///
+/// Unit variants only check the tag (no content property). Newtype variants
+/// deserialize the content property directly. Struct variants extract fields
+/// from the content object.
+fn build_adjacent_stj_read_arm(
+    variant: &TaggedVariant,
+    content: &str,
+    arm_indent: &str,
+    prop_indent: &str,
+) -> TokenStream {
+    let json_name = &variant.json_name;
+    let csharp_name = &variant.csharp_name;
+
+    match &variant.data {
+        TaggedVariantData::Unit => {
+            let arm = format!("{arm_indent}\"{json_name}\" => new {csharp_name}(),");
+            quote! { String::from(#arm) }
+        }
+        TaggedVariantData::Newtype { type_expr } => {
+            quote! {
+                {
+                    let csharp_type = #type_expr;
+                    format!(
+                        "{arm}\"{json}\" => new {name}\n\
+                         {arm}{{\n\
+                         {prop}Value = root.GetProperty(\"{content}\").Deserialize<{ty}>(options),\n\
+                         {arm}}},",
+                        arm = #arm_indent,
+                        json = #json_name,
+                        name = #csharp_name,
+                        prop = #prop_indent,
+                        content = #content,
+                        ty = csharp_type,
+                    )
+                }
+            }
+        }
+        TaggedVariantData::Struct(fields) => build_adjacent_stj_read_struct_arm(
+            csharp_name,
+            json_name,
+            fields,
+            content,
+            arm_indent,
+            prop_indent,
+        ),
+    }
+}
+
+/// Builds a STJ Read switch arm for a struct variant in adjacent tagging.
+///
+/// Reads `root.GetProperty("{content}")` into a content element, then
+/// extracts each field from that content object.
+fn build_adjacent_stj_read_struct_arm(
+    csharp_name: &str,
+    json_name: &str,
+    fields: &[CSharpField],
+    content: &str,
+    arm_indent: &str,
+    prop_indent: &str,
+) -> TokenStream {
+    let field_exprs: Vec<TokenStream> = fields
+        .iter()
+        .map(|f| {
+            let prop_name = &f.csharp_property_name;
+            let field_json = &f.json_name;
+            let type_expr = &f.type_expr;
+
+            quote! {
+                {
+                    let csharp_type = #type_expr;
+                    format!(
+                        "{prop}{name} = contentElement.GetProperty(\"{json}\").Deserialize<{ty}>(options),",
+                        prop = #prop_indent,
+                        name = #prop_name,
+                        json = #field_json,
+                        ty = csharp_type,
+                    )
+                }
+            }
+        })
+        .collect();
+
+    quote! {
+        {
+            let field_lines: Vec<String> = vec![#(#field_exprs),*];
+            let fields_str = field_lines.join("\n");
+            format!(
+                "{arm}\"{json}\" =>\n\
+                 {arm}{{\n\
+                 {prop}var contentElement = root.GetProperty(\"{content}\");\n\
+                 {prop}return new {name}\n\
+                 {prop}{{\n\
+                 {fields}\n\
+                 {prop}}};\n\
+                 {arm}}},",
+                arm = #arm_indent,
+                json = #json_name,
+                name = #csharp_name,
+                prop = #prop_indent,
+                content = #content,
+                fields = fields_str,
+            )
+        }
+    }
+}
+
+/// Builds a single STJ Write switch arm for a variant in adjacent tagging.
+///
+/// All variants write the tag property. Unit variants omit the content key.
+/// Newtype variants write the content as a direct value. Struct variants
+/// nest their fields inside a content object.
+fn build_adjacent_stj_write_arm(
+    variant: &TaggedVariant,
+    tag: &str,
+    content: &str,
+    case_indent: &str,
+    body_indent: &str,
+) -> TokenStream {
+    let json_name = &variant.json_name;
+    let csharp_name = &variant.csharp_name;
+    let var_name = variant.csharp_name.to_lowercase();
+
+    match &variant.data {
+        TaggedVariantData::Unit => {
+            // Unit: write start object, tag string, end object (no content key).
+            let arm = format!(
+                "{case_indent}case {csharp_name}:\n\
+                 {body_indent}writer.WriteStartObject();\n\
+                 {body_indent}writer.WriteString(\"{tag}\", \"{json_name}\");\n\
+                 {body_indent}writer.WriteEndObject();\n\
+                 {body_indent}break;",
+            );
+            quote! { String::from(#arm) }
+        }
+        TaggedVariantData::Newtype { type_expr } => {
+            quote! {
+                {
+                    let _ty = #type_expr;
+                    format!(
+                        "{ci}case {name} {var}:\n\
+                         {bi}writer.WriteStartObject();\n\
+                         {bi}writer.WriteString(\"{tag}\", \"{json}\");\n\
+                         {bi}writer.WritePropertyName(\"{content}\");\n\
+                         {bi}JsonSerializer.Serialize(writer, {var}.Value, options);\n\
+                         {bi}writer.WriteEndObject();\n\
+                         {bi}break;",
+                        ci = #case_indent,
+                        name = #csharp_name,
+                        var = #var_name,
+                        bi = #body_indent,
+                        tag = #tag,
+                        json = #json_name,
+                        content = #content,
+                    )
+                }
+            }
+        }
+        TaggedVariantData::Struct(fields) => build_adjacent_stj_write_struct_arm(
+            csharp_name,
+            json_name,
+            &var_name,
+            fields,
+            tag,
+            content,
+            case_indent,
+            body_indent,
+        ),
+    }
+}
+
+/// Builds a STJ Write switch arm for a struct variant in adjacent tagging.
+///
+/// Writes an outer object with the tag, then a content property containing
+/// a nested object with the struct fields.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "adjacent tagging needs tag + content keys in addition to standard arm params"
+)]
+fn build_adjacent_stj_write_struct_arm(
+    csharp_name: &str,
+    json_name: &str,
+    var_name: &str,
+    fields: &[CSharpField],
+    tag: &str,
+    content: &str,
+    case_indent: &str,
+    body_indent: &str,
+) -> TokenStream {
+    let field_lines: Vec<String> = fields
+        .iter()
+        .map(|f| {
+            let json = &f.json_name;
+            let prop = &f.csharp_property_name;
+            format!(
+                "{body_indent}writer.WritePropertyName(\"{json}\");\n\
+                 {body_indent}JsonSerializer.Serialize(writer, {var_name}.{prop}, options);",
+            )
+        })
+        .collect();
+
+    let fields_block = field_lines.join("\n");
+
+    let arm = format!(
+        "{case_indent}case {csharp_name} {var_name}:\n\
+         {body_indent}writer.WriteStartObject();\n\
+         {body_indent}writer.WriteString(\"{tag}\", \"{json_name}\");\n\
+         {body_indent}writer.WritePropertyName(\"{content}\");\n\
+         {body_indent}writer.WriteStartObject();\n\
+         {fields_block}\n\
+         {body_indent}writer.WriteEndObject();\n\
+         {body_indent}writer.WriteEndObject();\n\
+         {body_indent}break;",
+    );
+
+    quote! { String::from(#arm) }
+}
+
+/// Builds the Newtonsoft `JsonConverter<T>` for adjacently tagged enums.
+///
+/// Uses `JObject.Load(reader)` for deserialization and `JsonWriter` for
+/// serialization. The tag and content keys are sibling properties in the
+/// JSON object.
+fn build_adjacent_newtonsoft_converter(
+    csharp_name: &str,
+    tag: &str,
+    content: &str,
+    variants: &[TaggedVariant],
+    base_indent: &str,
+) -> TokenStream {
+    let inner = format!("{base_indent}    ");
+    let inner2 = format!("{inner}    ");
+    let inner3 = format!("{inner2}    ");
+    let inner4 = format!("{inner3}    ");
+
+    let read_arms: Vec<TokenStream> = variants
+        .iter()
+        .map(|v| build_adjacent_newtonsoft_read_arm(v, content, &inner3, &inner4))
+        .collect();
+
+    let write_arms: Vec<TokenStream> = variants
+        .iter()
+        .map(|v| build_adjacent_newtonsoft_write_arm(v, tag, content, &inner3, &inner4))
+        .collect();
+
+    quote! {
+        {
+            let mut read_parts: Vec<String> = Vec::new();
+            #(read_parts.push(#read_arms);)*
+
+            let mut write_parts: Vec<String> = Vec::new();
+            #(write_parts.push(#write_arms);)*
+
+            let read_block = read_parts.join("\n");
+            let write_block = write_parts.join("\n");
+
+            format!(
+                "\n\
+                 {base}private sealed class {name}Converter : JsonConverter<{name}>\n\
+                 {base}{{\n\
+                 {i1}public override {name} ReadJson(\n\
+                 {i2}JsonReader reader,\n\
+                 {i2}Type objectType,\n\
+                 {i2}{name} existingValue,\n\
+                 {i2}bool hasExistingValue,\n\
+                 {i2}JsonSerializer serializer)\n\
+                 {i1}{{\n\
+                 {i2}var obj = JObject.Load(reader);\n\
+                 {i2}var tag = (string)obj[\"{tag}\"];\n\
+                 \n\
+                 {i2}return tag switch\n\
+                 {i2}{{\n\
+                 {read}\n\
+                 {i2}    _ => throw new JsonException($\"Unknown discriminator value: {{tag}}\")\n\
+                 {i2}}};\n\
+                 {i1}}}\n\
+                 \n\
+                 {i1}public override void WriteJson(\n\
+                 {i2}JsonWriter writer,\n\
+                 {i2}{name} value,\n\
+                 {i2}JsonSerializer serializer)\n\
+                 {i1}{{\n\
+                 {i2}switch (value)\n\
+                 {i2}{{\n\
+                 {write}\n\
+                 {i2}}}\n\
+                 {i1}}}\n\
+                 {base}}}",
+                base = #base_indent,
+                name = #csharp_name,
+                i1 = #inner,
+                i2 = #inner2,
+                tag = #tag,
+                read = read_block,
+                write = write_block,
+            )
+        }
+    }
+}
+
+/// Builds a single Newtonsoft Read switch arm for a variant in adjacent
+/// tagging.
+///
+/// Unit variants construct directly from the tag match. Newtype variants
+/// use `obj["{content}"].ToObject<T>`. Struct variants extract fields from
+/// the content sub-object.
+fn build_adjacent_newtonsoft_read_arm(
+    variant: &TaggedVariant,
+    content: &str,
+    arm_indent: &str,
+    prop_indent: &str,
+) -> TokenStream {
+    let json_name = &variant.json_name;
+    let csharp_name = &variant.csharp_name;
+
+    match &variant.data {
+        TaggedVariantData::Unit => {
+            let arm = format!("{arm_indent}\"{json_name}\" => new {csharp_name}(),");
+            quote! { String::from(#arm) }
+        }
+        TaggedVariantData::Newtype { type_expr } => {
+            quote! {
+                {
+                    let csharp_type = #type_expr;
+                    format!(
+                        "{arm}\"{json}\" => new {name}\n\
+                         {arm}{{\n\
+                         {prop}Value = obj[\"{content}\"].ToObject<{ty}>(serializer),\n\
+                         {arm}}},",
+                        arm = #arm_indent,
+                        json = #json_name,
+                        name = #csharp_name,
+                        prop = #prop_indent,
+                        content = #content,
+                        ty = csharp_type,
+                    )
+                }
+            }
+        }
+        TaggedVariantData::Struct(fields) => build_adjacent_newtonsoft_read_struct_arm(
+            csharp_name,
+            json_name,
+            fields,
+            content,
+            arm_indent,
+            prop_indent,
+        ),
+    }
+}
+
+/// Builds a Newtonsoft Read switch arm for a struct variant in adjacent
+/// tagging.
+///
+/// Reads the content sub-object via `obj["{content}"]` and extracts each
+/// field from it.
+fn build_adjacent_newtonsoft_read_struct_arm(
+    csharp_name: &str,
+    json_name: &str,
+    fields: &[CSharpField],
+    content: &str,
+    arm_indent: &str,
+    prop_indent: &str,
+) -> TokenStream {
+    let field_exprs: Vec<TokenStream> = fields
+        .iter()
+        .map(|f| {
+            let prop_name = &f.csharp_property_name;
+            let field_json = &f.json_name;
+            let type_expr = &f.type_expr;
+
+            quote! {
+                {
+                    let csharp_type = #type_expr;
+                    format!(
+                        "{prop}{name} = contentObj[\"{json}\"].ToObject<{ty}>(serializer),",
+                        prop = #prop_indent,
+                        name = #prop_name,
+                        json = #field_json,
+                        ty = csharp_type,
+                    )
+                }
+            }
+        })
+        .collect();
+
+    quote! {
+        {
+            let field_lines: Vec<String> = vec![#(#field_exprs),*];
+            let fields_str = field_lines.join("\n");
+            format!(
+                "{arm}\"{json}\" =>\n\
+                 {arm}{{\n\
+                 {prop}var contentObj = obj[\"{content}\"];\n\
+                 {prop}return new {name}\n\
+                 {prop}{{\n\
+                 {fields}\n\
+                 {prop}}};\n\
+                 {arm}}},",
+                arm = #arm_indent,
+                json = #json_name,
+                name = #csharp_name,
+                prop = #prop_indent,
+                content = #content,
+                fields = fields_str,
+            )
+        }
+    }
+}
+
+/// Builds a single Newtonsoft Write switch arm for a variant in adjacent
+/// tagging.
+///
+/// Unit variants write only the tag property. Newtype and struct variants
+/// write both the tag and content properties, with struct content wrapped
+/// in a nested object.
+fn build_adjacent_newtonsoft_write_arm(
+    variant: &TaggedVariant,
+    tag: &str,
+    content: &str,
+    case_indent: &str,
+    body_indent: &str,
+) -> TokenStream {
+    let json_name = &variant.json_name;
+    let csharp_name = &variant.csharp_name;
+    let var_name = variant.csharp_name.to_lowercase();
+
+    match &variant.data {
+        TaggedVariantData::Unit => {
+            // Unit: write start object, tag property + value, end object.
+            let arm = format!(
+                "{case_indent}case {csharp_name}:\n\
+                 {body_indent}writer.WriteStartObject();\n\
+                 {body_indent}writer.WritePropertyName(\"{tag}\");\n\
+                 {body_indent}writer.WriteValue(\"{json_name}\");\n\
+                 {body_indent}writer.WriteEndObject();\n\
+                 {body_indent}break;",
+            );
+            quote! { String::from(#arm) }
+        }
+        TaggedVariantData::Newtype { type_expr } => {
+            quote! {
+                {
+                    let _ty = #type_expr;
+                    format!(
+                        "{ci}case {name} {var}:\n\
+                         {bi}writer.WriteStartObject();\n\
+                         {bi}writer.WritePropertyName(\"{tag}\");\n\
+                         {bi}writer.WriteValue(\"{json}\");\n\
+                         {bi}writer.WritePropertyName(\"{content}\");\n\
+                         {bi}serializer.Serialize(writer, {var}.Value);\n\
+                         {bi}writer.WriteEndObject();\n\
+                         {bi}break;",
+                        ci = #case_indent,
+                        name = #csharp_name,
+                        var = #var_name,
+                        bi = #body_indent,
+                        tag = #tag,
+                        json = #json_name,
+                        content = #content,
+                    )
+                }
+            }
+        }
+        TaggedVariantData::Struct(fields) => build_adjacent_newtonsoft_write_struct_arm(
+            csharp_name,
+            json_name,
+            &var_name,
+            fields,
+            tag,
+            content,
+            case_indent,
+            body_indent,
+        ),
+    }
+}
+
+/// Builds a Newtonsoft Write switch arm for a struct variant in adjacent
+/// tagging.
+///
+/// Writes the tag, then a content property containing a nested object with
+/// the struct fields.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "adjacent tagging needs tag + content keys in addition to standard arm params"
+)]
+fn build_adjacent_newtonsoft_write_struct_arm(
+    csharp_name: &str,
+    json_name: &str,
+    var_name: &str,
+    fields: &[CSharpField],
+    tag: &str,
+    content: &str,
+    case_indent: &str,
+    body_indent: &str,
+) -> TokenStream {
+    let field_lines: Vec<String> = fields
+        .iter()
+        .map(|f| {
+            let json = &f.json_name;
+            let prop = &f.csharp_property_name;
+            format!(
+                "{body_indent}writer.WritePropertyName(\"{json}\");\n\
+                 {body_indent}serializer.Serialize(writer, {var_name}.{prop});",
+            )
+        })
+        .collect();
+
+    let fields_block = field_lines.join("\n");
+
+    let arm = format!(
+        "{case_indent}case {csharp_name} {var_name}:\n\
+         {body_indent}writer.WriteStartObject();\n\
+         {body_indent}writer.WritePropertyName(\"{tag}\");\n\
+         {body_indent}writer.WriteValue(\"{json_name}\");\n\
+         {body_indent}writer.WritePropertyName(\"{content}\");\n\
          {body_indent}writer.WriteStartObject();\n\
          {fields_block}\n\
          {body_indent}writer.WriteEndObject();\n\

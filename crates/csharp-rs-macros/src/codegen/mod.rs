@@ -81,7 +81,26 @@ impl DerivedCSharp {
                 }
             }
             DerivedCSharpKind::Enum(_) => quote! { Vec::new() },
-            DerivedCSharpKind::TaggedEnum { .. } => todo!("tagged enum codegen \u{2014} Task 5"),
+            DerivedCSharpKind::TaggedEnum { variants, .. } => {
+                let type_exprs: Vec<&TokenStream> = variants
+                    .iter()
+                    .flat_map(|v| match &v.data {
+                        crate::types::TaggedVariantData::Unit => Vec::new(),
+                        crate::types::TaggedVariantData::Newtype { type_expr } => vec![type_expr],
+                        crate::types::TaggedVariantData::Struct(fields) => {
+                            fields.iter().map(|f| &f.type_expr).collect()
+                        }
+                    })
+                    .collect();
+
+                if type_exprs.is_empty() {
+                    quote! { Vec::new() }
+                } else {
+                    quote! {
+                        vec![#(#type_exprs),*]
+                    }
+                }
+            }
         }
     }
 
@@ -115,8 +134,8 @@ impl DerivedCSharp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{CSharpNamespace, Serializer};
-    use crate::types::{CSharpField, CSharpVariant};
+    use crate::config::{CSharpNamespace, CSharpVersion, Serializer};
+    use crate::types::{CSharpField, CSharpVariant, EnumTagging, TaggedVariant, TaggedVariantData};
     use std::path::PathBuf;
 
     /// Helper to build a minimal record IR with one field.
@@ -338,6 +357,380 @@ mod tests {
         assert!(
             tokens.contains("Vec :: new ()"),
             "enum should use Vec::new() for dependencies:\n{tokens}"
+        );
+    }
+
+    // --- Tagged enum test helpers ---
+
+    /// Builds a tagged enum IR with internal tagging, a struct variant, a
+    /// newtype variant, and a unit variant.
+    fn sample_tagged_enum_ir() -> DerivedCSharp {
+        DerivedCSharp {
+            rust_ident: quote::format_ident!("Message"),
+            csharp_name: String::from("Message"),
+            namespace: CSharpNamespace::new("Test.Ns").unwrap(),
+            kind: DerivedCSharpKind::TaggedEnum {
+                tagging: EnumTagging::Internal {
+                    tag: String::from("type"),
+                },
+                variants: vec![
+                    TaggedVariant {
+                        csharp_name: String::from("Request"),
+                        json_name: String::from("Request"),
+                        data: TaggedVariantData::Struct(vec![CSharpField {
+                            csharp_property_name: String::from("Id"),
+                            json_name: String::from("id"),
+                            type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                            is_optional: false,
+                        }]),
+                    },
+                    TaggedVariant {
+                        csharp_name: String::from("Text"),
+                        json_name: String::from("Text"),
+                        data: TaggedVariantData::Newtype {
+                            type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                        },
+                    },
+                    TaggedVariant {
+                        csharp_name: String::from("Quit"),
+                        json_name: String::from("Quit"),
+                        data: TaggedVariantData::Unit,
+                    },
+                ],
+            },
+            export: false,
+            export_to: None,
+        }
+    }
+
+    fn stj_csharp11_config() -> CSharpConfig {
+        CSharpConfig {
+            serializer: Serializer::SystemTextJson,
+            target: CSharpVersion::CSharp11,
+            ..CSharpConfig::default()
+        }
+    }
+
+    fn stj_csharp10_config() -> CSharpConfig {
+        CSharpConfig {
+            serializer: Serializer::SystemTextJson,
+            target: CSharpVersion::CSharp10,
+            ..CSharpConfig::default()
+        }
+    }
+
+    // --- Tagged enum tests ---
+
+    #[test]
+    fn tagged_internal_stj_csharp11_has_json_polymorphic() {
+        let config = stj_csharp11_config();
+        let ir = sample_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        assert!(
+            tokens.contains("JsonPolymorphic"),
+            "C# 11 + STJ + internal tag should contain [JsonPolymorphic]:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("TypeDiscriminatorPropertyName"),
+            "should contain TypeDiscriminatorPropertyName:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn tagged_internal_stj_csharp11_has_json_derived_type() {
+        let config = stj_csharp11_config();
+        let ir = sample_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        assert!(
+            tokens.contains("JsonDerivedType"),
+            "C# 11 + STJ + internal tag should contain [JsonDerivedType]:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("Message.Request"),
+            "should reference nested type Message.Request:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("Message.Quit"),
+            "should reference nested type Message.Quit:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn tagged_internal_stj_csharp11_has_abstract_record() {
+        let config = stj_csharp11_config();
+        let ir = sample_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        // The format template in the token stream contains the pattern.
+        assert!(
+            tokens.contains("public abstract record"),
+            "should declare abstract record:\n{tokens}"
+        );
+        assert!(
+            tokens.contains(r#"name = "Message""#),
+            "should bind name to Message:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn tagged_internal_stj_csharp11_has_sealed_records() {
+        let config = stj_csharp11_config();
+        let ir = sample_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        // Struct/newtype variants use format params; check the template pattern.
+        assert!(
+            tokens.contains("sealed record {name} : {parent}"),
+            "should contain sealed record pattern for data variants:\n{tokens}"
+        );
+        // Unit variant is a full string literal.
+        assert!(
+            tokens.contains("sealed record Quit : Message;"),
+            "should contain sealed record literal for unit variant:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn tagged_internal_stj_csharp11_has_required_modifier() {
+        let config = stj_csharp11_config();
+        let ir = sample_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        assert!(
+            tokens.contains("required"),
+            "C# 11 should emit required modifier:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn tagged_internal_stj_csharp11_has_file_scoped_namespace() {
+        let config = stj_csharp11_config();
+        let ir = sample_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        // The format template contains `namespace {ns};` for file-scoped.
+        assert!(
+            tokens.contains("namespace {ns};"),
+            "C# 11 should use file-scoped namespace (semicolon):\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn tagged_internal_stj_csharp11_uses_stj_using() {
+        let config = stj_csharp11_config();
+        let ir = sample_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        assert!(
+            tokens.contains("System.Text.Json.Serialization"),
+            "should contain STJ using directive:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn tagged_internal_stj_csharp9_has_block_namespace() {
+        let config = stj_config(); // default is C# 9
+        let ir = sample_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        // Block namespace should NOT have semicolon directly after `{ns}`.
+        assert!(
+            !tokens.contains("namespace {ns};"),
+            "C# 9 should use block-scoped namespace, not file-scoped:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("namespace {ns}"),
+            "should contain namespace placeholder:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn tagged_internal_stj_csharp9_no_required() {
+        let config = stj_config(); // default is C# 9
+        let ir = sample_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        assert!(
+            !tokens.contains("required"),
+            "C# 9 should NOT emit required modifier:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn tagged_internal_stj_csharp9_has_json_converter() {
+        let config = stj_config(); // default is C# 9
+        let ir = sample_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        assert!(
+            tokens.contains("JsonConverter"),
+            "C# 9 + STJ should use [JsonConverter] (converter path):\n{tokens}"
+        );
+        assert!(
+            tokens.contains("MessageConverter"),
+            "should reference MessageConverter:\n{tokens}"
+        );
+        // Should NOT have [JsonPolymorphic] on C# 9
+        assert!(
+            !tokens.contains("JsonPolymorphic"),
+            "C# 9 should NOT use [JsonPolymorphic]:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn tagged_struct_variant_has_properties() {
+        let config = stj_csharp11_config();
+        let ir = sample_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        assert!(
+            tokens.contains("JsonPropertyName"),
+            "struct variant should have [JsonPropertyName] attributes:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("get; init;"),
+            "struct variant should have {{ get; init; }} accessors:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn tagged_newtype_variant_has_value_property() {
+        let config = stj_csharp11_config();
+        let ir = sample_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        assert!(
+            tokens.contains("Value"),
+            "newtype variant should have a Value property:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn tagged_unit_variant_is_semicolon_record() {
+        let config = stj_csharp11_config();
+        let ir = sample_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        // Unit variant is a literal string in the token stream.
+        assert!(
+            tokens.contains("sealed record Quit : Message;"),
+            "unit variant should use semicolon (no braces):\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn tagged_newtonsoft_has_json_property() {
+        let config = CSharpConfig {
+            serializer: Serializer::Newtonsoft,
+            target: CSharpVersion::CSharp11,
+            ..CSharpConfig::default()
+        };
+        let ir = sample_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        assert!(
+            tokens.contains("JsonProperty"),
+            "Newtonsoft should use [JsonProperty] instead of [JsonPropertyName]:\n{tokens}"
+        );
+        assert!(
+            !tokens.contains("JsonPropertyName"),
+            "Newtonsoft should NOT contain JsonPropertyName:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("Newtonsoft.Json"),
+            "Newtonsoft should contain using Newtonsoft.Json:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn tagged_csharp10_has_file_scoped_but_no_required() {
+        let config = stj_csharp10_config();
+        let ir = sample_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        // C# 10 uses converter path (not native polymorphism), so format template
+        // should contain file-scoped namespace pattern.
+        assert!(
+            tokens.contains("namespace {ns};"),
+            "C# 10 should use file-scoped namespace:\n{tokens}"
+        );
+        assert!(
+            !tokens.contains("required"),
+            "C# 10 should NOT emit required modifier:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn tagged_enum_dependencies_includes_type_exprs() {
+        let config = stj_config();
+        let ir = sample_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        // Should contain the CSharp::csharp_name() calls for struct/newtype fields
+        assert!(
+            tokens.contains("csharp_rs :: CSharp"),
+            "tagged enum dependencies should include type expressions:\n{tokens}"
+        );
+        // Should NOT use Vec::new() since there are fields
+        assert!(
+            !tokens.contains("Vec :: new ()"),
+            "tagged enum with fields should not return empty dependencies:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn tagged_enum_unit_only_dependencies_empty() {
+        let ir = DerivedCSharp {
+            rust_ident: quote::format_ident!("Status"),
+            csharp_name: String::from("Status"),
+            namespace: CSharpNamespace::new("Test.Ns").unwrap(),
+            kind: DerivedCSharpKind::TaggedEnum {
+                tagging: EnumTagging::Internal {
+                    tag: String::from("kind"),
+                },
+                variants: vec![
+                    TaggedVariant {
+                        csharp_name: String::from("Active"),
+                        json_name: String::from("Active"),
+                        data: TaggedVariantData::Unit,
+                    },
+                    TaggedVariant {
+                        csharp_name: String::from("Inactive"),
+                        json_name: String::from("Inactive"),
+                        data: TaggedVariantData::Unit,
+                    },
+                ],
+            },
+            export: false,
+            export_to: None,
+        };
+        let tokens = ir.into_token_stream(&stj_config()).to_string();
+        assert!(
+            tokens.contains("Vec :: new ()"),
+            "unit-only tagged enum should have empty dependencies:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn tagged_newtonsoft_uses_converter_path_not_polymorphic() {
+        // Even with C# 11+, Newtonsoft should use converter path
+        let config = CSharpConfig {
+            serializer: Serializer::Newtonsoft,
+            target: CSharpVersion::CSharp12,
+            ..CSharpConfig::default()
+        };
+        let ir = sample_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        assert!(
+            tokens.contains("MessageConverter"),
+            "Newtonsoft should use converter path:\n{tokens}"
+        );
+        assert!(
+            !tokens.contains("JsonPolymorphic"),
+            "Newtonsoft should NOT use [JsonPolymorphic]:\n{tokens}"
         );
     }
 }

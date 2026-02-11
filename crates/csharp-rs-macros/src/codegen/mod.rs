@@ -925,4 +925,187 @@ mod tests {
             "C# 11 + STJ should use native [JsonPolymorphic]:\n{tokens}"
         );
     }
+
+    // --- Externally tagged enum test helpers ---
+
+    /// Builds an externally tagged enum IR with a struct variant (`Request`),
+    /// a newtype variant (`Text`), and a unit variant (`Quit`).
+    fn sample_external_tagged_enum_ir() -> DerivedCSharp {
+        DerivedCSharp {
+            rust_ident: quote::format_ident!("Message"),
+            csharp_name: String::from("Message"),
+            namespace: CSharpNamespace::new("Test.Ns").unwrap(),
+            kind: DerivedCSharpKind::TaggedEnum {
+                tagging: EnumTagging::External,
+                variants: vec![
+                    TaggedVariant {
+                        csharp_name: String::from("Request"),
+                        json_name: String::from("Request"),
+                        data: TaggedVariantData::Struct(vec![CSharpField {
+                            csharp_property_name: String::from("Id"),
+                            json_name: String::from("id"),
+                            type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                            is_optional: false,
+                        }]),
+                    },
+                    TaggedVariant {
+                        csharp_name: String::from("Text"),
+                        json_name: String::from("Text"),
+                        data: TaggedVariantData::Newtype {
+                            type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                        },
+                    },
+                    TaggedVariant {
+                        csharp_name: String::from("Quit"),
+                        json_name: String::from("Quit"),
+                        data: TaggedVariantData::Unit,
+                    },
+                ],
+            },
+            export: false,
+            export_to: None,
+        }
+    }
+
+    // --- Externally tagged converter tests ---
+
+    #[test]
+    fn external_stj_has_converter() {
+        let config = stj_config();
+        let ir = sample_external_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        assert!(
+            tokens.contains("JsonConverter"),
+            "externally tagged STJ should have [JsonConverter] attribute:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("MessageConverter"),
+            "externally tagged STJ should reference MessageConverter:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("private sealed class"),
+            "externally tagged STJ should generate converter class:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn external_stj_read_handles_string_for_unit() {
+        let config = stj_config();
+        let ir = sample_external_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        assert!(
+            tokens.contains("ValueKind.String"),
+            "STJ external Read should check ValueKind.String for unit variants:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("GetString"),
+            "STJ external Read should call GetString() for the variant name:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("new Quit()"),
+            "STJ external Read should construct unit variant with empty ctor:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn external_stj_read_handles_object_for_data() {
+        let config = stj_config();
+        let ir = sample_external_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        assert!(
+            tokens.contains("ValueKind.Object"),
+            "STJ external Read should check ValueKind.Object for data variants:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("EnumerateObject"),
+            "STJ external Read should use EnumerateObject() to get the single property:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn external_stj_write_unit_uses_string_value() {
+        let config = stj_config();
+        let ir = sample_external_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        assert!(
+            tokens.contains("WriteStringValue"),
+            "STJ external Write should use WriteStringValue for unit variants:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn external_stj_write_data_uses_property_name() {
+        let config = stj_config();
+        let ir = sample_external_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        assert!(
+            tokens.contains("WritePropertyName"),
+            "STJ external Write should wrap data in object with variant name key:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("WriteStartObject"),
+            "STJ external Write should open object for data variants:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("WriteEndObject"),
+            "STJ external Write should close object for data variants:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn external_newtonsoft_has_converter() {
+        let config = newtonsoft_config();
+        let ir = sample_external_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        assert!(
+            tokens.contains("JsonConverter"),
+            "externally tagged Newtonsoft should have [JsonConverter] attribute:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("MessageConverter"),
+            "externally tagged Newtonsoft should reference MessageConverter:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("Newtonsoft.Json"),
+            "externally tagged Newtonsoft should have using directive:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn external_newtonsoft_read_handles_tokens() {
+        let config = newtonsoft_config();
+        let ir = sample_external_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        assert!(
+            tokens.contains("JsonToken.String"),
+            "Newtonsoft external Read should check JsonToken.String:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("JsonToken.StartObject"),
+            "Newtonsoft external Read should check JsonToken.StartObject:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("JObject.Load"),
+            "Newtonsoft external Read should use JObject.Load for object variants:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn external_newtonsoft_write_unit_uses_write_value() {
+        let config = newtonsoft_config();
+        let ir = sample_external_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        assert!(
+            tokens.contains("WriteValue"),
+            "Newtonsoft external Write should use WriteValue for unit variants:\n{tokens}"
+        );
+    }
 }

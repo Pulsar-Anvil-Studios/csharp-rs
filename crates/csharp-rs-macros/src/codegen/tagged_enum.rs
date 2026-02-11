@@ -323,8 +323,28 @@ fn build_converter_block(
                 )),
             }
         }
-        EnumTagging::External | EnumTagging::Adjacent { .. } | EnumTagging::Untagged => {
-            todo!("converter generation for non-internal tagging modes")
+        EnumTagging::External => {
+            let base_indent = if use_file_scoped_ns {
+                "    "
+            } else {
+                "        "
+            };
+
+            match config.serializer {
+                Serializer::SystemTextJson => Some(build_external_stj_converter(
+                    csharp_name,
+                    variants,
+                    base_indent,
+                )),
+                Serializer::Newtonsoft => Some(build_external_newtonsoft_converter(
+                    csharp_name,
+                    variants,
+                    base_indent,
+                )),
+            }
+        }
+        EnumTagging::Adjacent { .. } | EnumTagging::Untagged => {
+            todo!("converter generation for adjacent and untagged modes")
         }
     }
 }
@@ -838,6 +858,587 @@ fn build_newtonsoft_write_struct_arm(
          {body_indent}writer.WritePropertyName(\"{tag}\");\n\
          {body_indent}writer.WriteValue(\"{json_name}\");\n\
          {fields_block}\n\
+         {body_indent}break;",
+    );
+
+    quote! { String::from(#arm) }
+}
+
+/// Builds the STJ `JsonConverter<T>` for externally tagged enums.
+///
+/// External tagging is serde's default: unit variants serialize to raw strings
+/// (e.g., `"Quit"`), while data variants serialize to single-property objects
+/// (e.g., `{"Text": "hello"}` or `{"Request": {"id": "abc"}}`).
+///
+/// The `Read` method checks `root.ValueKind` to distinguish string (unit) from
+/// object (data) variants. The `Write` method uses `WriteStringValue` for unit
+/// variants and wraps data variants in an object keyed by the variant name.
+fn build_external_stj_converter(
+    csharp_name: &str,
+    variants: &[TaggedVariant],
+    base_indent: &str,
+) -> TokenStream {
+    let inner = format!("{base_indent}    ");
+    let inner2 = format!("{inner}    ");
+    let inner3 = format!("{inner2}    ");
+    let inner4 = format!("{inner3}    ");
+    let inner5 = format!("{inner4}    ");
+
+    let read_unit_arms: Vec<TokenStream> = variants
+        .iter()
+        .filter(|v| matches!(v.data, TaggedVariantData::Unit))
+        .map(|v| build_external_stj_read_unit_arm(v, &inner4, &inner5))
+        .collect();
+
+    let read_object_arms: Vec<TokenStream> = variants
+        .iter()
+        .filter(|v| !matches!(v.data, TaggedVariantData::Unit))
+        .map(|v| build_external_stj_read_object_arm(v, &inner4, &inner5))
+        .collect();
+
+    let write_arms: Vec<TokenStream> = variants
+        .iter()
+        .map(|v| build_external_stj_write_arm(v, &inner3, &inner4))
+        .collect();
+
+    quote! {
+        {
+            let mut read_unit_parts: Vec<String> = Vec::new();
+            #(read_unit_parts.push(#read_unit_arms);)*
+
+            let mut read_object_parts: Vec<String> = Vec::new();
+            #(read_object_parts.push(#read_object_arms);)*
+
+            let mut write_parts: Vec<String> = Vec::new();
+            #(write_parts.push(#write_arms);)*
+
+            let read_unit_block = read_unit_parts.join("\n");
+            let read_object_block = read_object_parts.join("\n");
+            let write_block = write_parts.join("\n");
+
+            format!(
+                "\n\
+                 {base}private sealed class {name}Converter : JsonConverter<{name}>\n\
+                 {base}{{\n\
+                 {i1}public override {name} Read(\n\
+                 {i2}ref Utf8JsonReader reader,\n\
+                 {i2}Type typeToConvert,\n\
+                 {i2}JsonSerializerOptions options)\n\
+                 {i1}{{\n\
+                 {i2}using var doc = JsonDocument.ParseValue(ref reader);\n\
+                 {i2}var root = doc.RootElement;\n\
+                 \n\
+                 {i2}if (root.ValueKind == JsonValueKind.String)\n\
+                 {i2}{{\n\
+                 {i3}var tag = root.GetString();\n\
+                 {i3}return tag switch\n\
+                 {i3}{{\n\
+                 {read_unit}\n\
+                 {i3}    _ => throw new JsonException($\"Unknown unit variant: {{tag}}\")\n\
+                 {i3}}};\n\
+                 {i2}}}\n\
+                 \n\
+                 {i2}if (root.ValueKind == JsonValueKind.Object)\n\
+                 {i2}{{\n\
+                 {i3}var prop = root.EnumerateObject().First();\n\
+                 {i3}return prop.Name switch\n\
+                 {i3}{{\n\
+                 {read_obj}\n\
+                 {i3}    _ => throw new JsonException($\"Unknown variant: {{prop.Name}}\")\n\
+                 {i3}}};\n\
+                 {i2}}}\n\
+                 \n\
+                 {i2}throw new JsonException($\"Unexpected JSON token: {{root.ValueKind}}\");\n\
+                 {i1}}}\n\
+                 \n\
+                 {i1}public override void Write(\n\
+                 {i2}Utf8JsonWriter writer,\n\
+                 {i2}{name} value,\n\
+                 {i2}JsonSerializerOptions options)\n\
+                 {i1}{{\n\
+                 {i2}switch (value)\n\
+                 {i2}{{\n\
+                 {write}\n\
+                 {i2}}}\n\
+                 {i1}}}\n\
+                 {base}}}",
+                base = #base_indent,
+                name = #csharp_name,
+                i1 = #inner,
+                i2 = #inner2,
+                i3 = #inner3,
+                read_unit = read_unit_block,
+                read_obj = read_object_block,
+                write = write_block,
+            )
+        }
+    }
+}
+
+/// Builds a STJ Read switch arm for a unit variant in external tagging.
+///
+/// Unit variants appear as raw JSON strings (e.g., `"Quit"`).
+fn build_external_stj_read_unit_arm(
+    variant: &TaggedVariant,
+    arm_indent: &str,
+    _prop_indent: &str,
+) -> TokenStream {
+    let json_name = &variant.json_name;
+    let csharp_name = &variant.csharp_name;
+
+    let arm = format!("{arm_indent}\"{json_name}\" => new {csharp_name}(),");
+    quote! { String::from(#arm) }
+}
+
+/// Builds a STJ Read switch arm for a data variant (newtype or struct) in
+/// external tagging.
+///
+/// Data variants appear as single-property objects: `{"VariantName": data}`.
+fn build_external_stj_read_object_arm(
+    variant: &TaggedVariant,
+    arm_indent: &str,
+    prop_indent: &str,
+) -> TokenStream {
+    let json_name = &variant.json_name;
+    let csharp_name = &variant.csharp_name;
+
+    match &variant.data {
+        TaggedVariantData::Unit => {
+            unreachable!("unit variants are handled separately")
+        }
+        TaggedVariantData::Newtype { type_expr } => {
+            quote! {
+                {
+                    let csharp_type = #type_expr;
+                    format!(
+                        "{arm}\"{json}\" => new {name}\n\
+                         {arm}{{\n\
+                         {prop}Value = prop.Value.Deserialize<{ty}>(options),\n\
+                         {arm}}},",
+                        arm = #arm_indent,
+                        json = #json_name,
+                        name = #csharp_name,
+                        prop = #prop_indent,
+                        ty = csharp_type,
+                    )
+                }
+            }
+        }
+        TaggedVariantData::Struct(fields) => {
+            let field_exprs: Vec<TokenStream> = fields
+                .iter()
+                .map(|f| {
+                    let field_prop_name = &f.csharp_property_name;
+                    let field_json = &f.json_name;
+                    let field_type_expr = &f.type_expr;
+
+                    quote! {
+                        {
+                            let csharp_type = #field_type_expr;
+                            format!(
+                                "{prop}{name} = prop.Value.GetProperty(\"{json}\").Deserialize<{ty}>(options),",
+                                prop = #prop_indent,
+                                name = #field_prop_name,
+                                json = #field_json,
+                                ty = csharp_type,
+                            )
+                        }
+                    }
+                })
+                .collect();
+
+            quote! {
+                {
+                    let field_lines: Vec<String> = vec![#(#field_exprs),*];
+                    let fields_str = field_lines.join("\n");
+                    format!(
+                        "{arm}\"{json}\" => new {name}\n\
+                         {arm}{{\n\
+                         {fields}\n\
+                         {arm}}},",
+                        arm = #arm_indent,
+                        json = #json_name,
+                        name = #csharp_name,
+                        fields = fields_str,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/// Builds a single STJ Write switch arm for a variant in external tagging.
+///
+/// Unit variants emit `WriteStringValue("Name")`. Data variants wrap content
+/// in `WriteStartObject` / `WritePropertyName` / `WriteEndObject`.
+fn build_external_stj_write_arm(
+    variant: &TaggedVariant,
+    case_indent: &str,
+    body_indent: &str,
+) -> TokenStream {
+    let json_name = &variant.json_name;
+    let csharp_name = &variant.csharp_name;
+    let var_name = variant.csharp_name.to_lowercase();
+
+    match &variant.data {
+        TaggedVariantData::Unit => {
+            let arm = format!(
+                "{case_indent}case {csharp_name}:\n\
+                 {body_indent}writer.WriteStringValue(\"{json_name}\");\n\
+                 {body_indent}break;",
+            );
+            quote! { String::from(#arm) }
+        }
+        TaggedVariantData::Newtype { type_expr } => {
+            quote! {
+                {
+                    let _ty = #type_expr;
+                    format!(
+                        "{ci}case {name} {var}:\n\
+                         {bi}writer.WriteStartObject();\n\
+                         {bi}writer.WritePropertyName(\"{json}\");\n\
+                         {bi}JsonSerializer.Serialize(writer, {var}.Value, options);\n\
+                         {bi}writer.WriteEndObject();\n\
+                         {bi}break;",
+                        ci = #case_indent,
+                        name = #csharp_name,
+                        var = #var_name,
+                        bi = #body_indent,
+                        json = #json_name,
+                    )
+                }
+            }
+        }
+        TaggedVariantData::Struct(fields) => build_external_stj_write_struct_arm(
+            csharp_name,
+            json_name,
+            &var_name,
+            fields,
+            case_indent,
+            body_indent,
+        ),
+    }
+}
+
+/// Builds a STJ Write switch arm for a struct variant in external tagging.
+///
+/// Wraps the struct fields in a nested object keyed by the variant name:
+/// `{"VariantName": {"field1": ..., "field2": ...}}`.
+fn build_external_stj_write_struct_arm(
+    csharp_name: &str,
+    json_name: &str,
+    var_name: &str,
+    fields: &[CSharpField],
+    case_indent: &str,
+    body_indent: &str,
+) -> TokenStream {
+    let field_lines: Vec<String> = fields
+        .iter()
+        .map(|f| {
+            let json = &f.json_name;
+            let prop = &f.csharp_property_name;
+            format!(
+                "{body_indent}writer.WritePropertyName(\"{json}\");\n\
+                 {body_indent}JsonSerializer.Serialize(writer, {var_name}.{prop}, options);",
+            )
+        })
+        .collect();
+
+    let fields_block = field_lines.join("\n");
+
+    let arm = format!(
+        "{case_indent}case {csharp_name} {var_name}:\n\
+         {body_indent}writer.WriteStartObject();\n\
+         {body_indent}writer.WritePropertyName(\"{json_name}\");\n\
+         {body_indent}writer.WriteStartObject();\n\
+         {fields_block}\n\
+         {body_indent}writer.WriteEndObject();\n\
+         {body_indent}writer.WriteEndObject();\n\
+         {body_indent}break;",
+    );
+
+    quote! { String::from(#arm) }
+}
+
+/// Builds the Newtonsoft `JsonConverter<T>` for externally tagged enums.
+///
+/// External tagging uses `JsonToken.String` for unit variants and
+/// `JsonToken.StartObject` for data variants. The Read method dispatches
+/// on `reader.TokenType`, while Write uses `WriteValue` for units and
+/// `WritePropertyName` + `serializer.Serialize` for data variants.
+fn build_external_newtonsoft_converter(
+    csharp_name: &str,
+    variants: &[TaggedVariant],
+    base_indent: &str,
+) -> TokenStream {
+    let inner = format!("{base_indent}    ");
+    let inner2 = format!("{inner}    ");
+    let inner3 = format!("{inner2}    ");
+    let inner4 = format!("{inner3}    ");
+    let inner5 = format!("{inner4}    ");
+
+    let read_unit_arms: Vec<TokenStream> = variants
+        .iter()
+        .filter(|v| matches!(v.data, TaggedVariantData::Unit))
+        .map(|v| build_external_newtonsoft_read_unit_arm(v, &inner4, &inner5))
+        .collect();
+
+    let read_object_arms: Vec<TokenStream> = variants
+        .iter()
+        .filter(|v| !matches!(v.data, TaggedVariantData::Unit))
+        .map(|v| build_external_newtonsoft_read_object_arm(v, &inner4, &inner5))
+        .collect();
+
+    let write_arms: Vec<TokenStream> = variants
+        .iter()
+        .map(|v| build_external_newtonsoft_write_arm(v, &inner3, &inner4))
+        .collect();
+
+    quote! {
+        {
+            let mut read_unit_parts: Vec<String> = Vec::new();
+            #(read_unit_parts.push(#read_unit_arms);)*
+
+            let mut read_object_parts: Vec<String> = Vec::new();
+            #(read_object_parts.push(#read_object_arms);)*
+
+            let mut write_parts: Vec<String> = Vec::new();
+            #(write_parts.push(#write_arms);)*
+
+            let read_unit_block = read_unit_parts.join("\n");
+            let read_object_block = read_object_parts.join("\n");
+            let write_block = write_parts.join("\n");
+
+            format!(
+                "\n\
+                 {base}private sealed class {name}Converter : JsonConverter<{name}>\n\
+                 {base}{{\n\
+                 {i1}public override {name} ReadJson(\n\
+                 {i2}JsonReader reader,\n\
+                 {i2}Type objectType,\n\
+                 {i2}{name} existingValue,\n\
+                 {i2}bool hasExistingValue,\n\
+                 {i2}JsonSerializer serializer)\n\
+                 {i1}{{\n\
+                 {i2}if (reader.TokenType == JsonToken.String)\n\
+                 {i2}{{\n\
+                 {i3}var tag = (string)JValue.ReadFrom(reader);\n\
+                 {i3}return tag switch\n\
+                 {i3}{{\n\
+                 {read_unit}\n\
+                 {i3}    _ => throw new JsonException($\"Unknown unit variant: {{tag}}\")\n\
+                 {i3}}};\n\
+                 {i2}}}\n\
+                 \n\
+                 {i2}if (reader.TokenType == JsonToken.StartObject)\n\
+                 {i2}{{\n\
+                 {i3}var obj = JObject.Load(reader);\n\
+                 {i3}var prop = obj.Properties().First();\n\
+                 {i3}return prop.Name switch\n\
+                 {i3}{{\n\
+                 {read_obj}\n\
+                 {i3}    _ => throw new JsonException($\"Unknown variant: {{prop.Name}}\")\n\
+                 {i3}}};\n\
+                 {i2}}}\n\
+                 \n\
+                 {i2}throw new JsonException($\"Unexpected token: {{reader.TokenType}}\");\n\
+                 {i1}}}\n\
+                 \n\
+                 {i1}public override void WriteJson(\n\
+                 {i2}JsonWriter writer,\n\
+                 {i2}{name} value,\n\
+                 {i2}JsonSerializer serializer)\n\
+                 {i1}{{\n\
+                 {i2}switch (value)\n\
+                 {i2}{{\n\
+                 {write}\n\
+                 {i2}}}\n\
+                 {i1}}}\n\
+                 {base}}}",
+                base = #base_indent,
+                name = #csharp_name,
+                i1 = #inner,
+                i2 = #inner2,
+                i3 = #inner3,
+                read_unit = read_unit_block,
+                read_obj = read_object_block,
+                write = write_block,
+            )
+        }
+    }
+}
+
+/// Builds a Newtonsoft Read switch arm for a unit variant in external tagging.
+fn build_external_newtonsoft_read_unit_arm(
+    variant: &TaggedVariant,
+    arm_indent: &str,
+    _prop_indent: &str,
+) -> TokenStream {
+    let json_name = &variant.json_name;
+    let csharp_name = &variant.csharp_name;
+
+    let arm = format!("{arm_indent}\"{json_name}\" => new {csharp_name}(),");
+    quote! { String::from(#arm) }
+}
+
+/// Builds a Newtonsoft Read switch arm for a data variant (newtype or struct)
+/// in external tagging.
+fn build_external_newtonsoft_read_object_arm(
+    variant: &TaggedVariant,
+    arm_indent: &str,
+    prop_indent: &str,
+) -> TokenStream {
+    let json_name = &variant.json_name;
+    let csharp_name = &variant.csharp_name;
+
+    match &variant.data {
+        TaggedVariantData::Unit => {
+            unreachable!("unit variants are handled separately")
+        }
+        TaggedVariantData::Newtype { type_expr } => {
+            quote! {
+                {
+                    let csharp_type = #type_expr;
+                    format!(
+                        "{arm}\"{json}\" => new {name}\n\
+                         {arm}{{\n\
+                         {prop}Value = prop.Value.ToObject<{ty}>(serializer),\n\
+                         {arm}}},",
+                        arm = #arm_indent,
+                        json = #json_name,
+                        name = #csharp_name,
+                        prop = #prop_indent,
+                        ty = csharp_type,
+                    )
+                }
+            }
+        }
+        TaggedVariantData::Struct(fields) => {
+            let field_exprs: Vec<TokenStream> = fields
+                .iter()
+                .map(|f| {
+                    let field_prop_name = &f.csharp_property_name;
+                    let field_json = &f.json_name;
+                    let field_type_expr = &f.type_expr;
+
+                    quote! {
+                        {
+                            let csharp_type = #field_type_expr;
+                            format!(
+                                "{prop}{name} = prop.Value[\"{json}\"].ToObject<{ty}>(serializer),",
+                                prop = #prop_indent,
+                                name = #field_prop_name,
+                                json = #field_json,
+                                ty = csharp_type,
+                            )
+                        }
+                    }
+                })
+                .collect();
+
+            quote! {
+                {
+                    let field_lines: Vec<String> = vec![#(#field_exprs),*];
+                    let fields_str = field_lines.join("\n");
+                    format!(
+                        "{arm}\"{json}\" => new {name}\n\
+                         {arm}{{\n\
+                         {fields}\n\
+                         {arm}}},",
+                        arm = #arm_indent,
+                        json = #json_name,
+                        name = #csharp_name,
+                        fields = fields_str,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/// Builds a single Newtonsoft Write switch arm for a variant in external
+/// tagging.
+fn build_external_newtonsoft_write_arm(
+    variant: &TaggedVariant,
+    case_indent: &str,
+    body_indent: &str,
+) -> TokenStream {
+    let json_name = &variant.json_name;
+    let csharp_name = &variant.csharp_name;
+    let var_name = variant.csharp_name.to_lowercase();
+
+    match &variant.data {
+        TaggedVariantData::Unit => {
+            let arm = format!(
+                "{case_indent}case {csharp_name}:\n\
+                 {body_indent}writer.WriteValue(\"{json_name}\");\n\
+                 {body_indent}break;",
+            );
+            quote! { String::from(#arm) }
+        }
+        TaggedVariantData::Newtype { type_expr } => {
+            quote! {
+                {
+                    let _ty = #type_expr;
+                    format!(
+                        "{ci}case {name} {var}:\n\
+                         {bi}writer.WriteStartObject();\n\
+                         {bi}writer.WritePropertyName(\"{json}\");\n\
+                         {bi}serializer.Serialize(writer, {var}.Value);\n\
+                         {bi}writer.WriteEndObject();\n\
+                         {bi}break;",
+                        ci = #case_indent,
+                        name = #csharp_name,
+                        var = #var_name,
+                        bi = #body_indent,
+                        json = #json_name,
+                    )
+                }
+            }
+        }
+        TaggedVariantData::Struct(fields) => build_external_newtonsoft_write_struct_arm(
+            csharp_name,
+            json_name,
+            &var_name,
+            fields,
+            case_indent,
+            body_indent,
+        ),
+    }
+}
+
+/// Builds a Newtonsoft Write switch arm for a struct variant in external
+/// tagging.
+fn build_external_newtonsoft_write_struct_arm(
+    csharp_name: &str,
+    json_name: &str,
+    var_name: &str,
+    fields: &[CSharpField],
+    case_indent: &str,
+    body_indent: &str,
+) -> TokenStream {
+    let field_lines: Vec<String> = fields
+        .iter()
+        .map(|f| {
+            let json = &f.json_name;
+            let prop = &f.csharp_property_name;
+            format!(
+                "{body_indent}writer.WritePropertyName(\"{json}\");\n\
+                 {body_indent}serializer.Serialize(writer, {var_name}.{prop});",
+            )
+        })
+        .collect();
+
+    let fields_block = field_lines.join("\n");
+
+    let arm = format!(
+        "{case_indent}case {csharp_name} {var_name}:\n\
+         {body_indent}writer.WriteStartObject();\n\
+         {body_indent}writer.WritePropertyName(\"{json_name}\");\n\
+         {body_indent}writer.WriteStartObject();\n\
+         {fields_block}\n\
+         {body_indent}writer.WriteEndObject();\n\
+         {body_indent}writer.WriteEndObject();\n\
          {body_indent}break;",
     );
 

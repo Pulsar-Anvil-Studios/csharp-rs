@@ -673,9 +673,14 @@ mod tests {
             tokens.contains("csharp_rs :: CSharp"),
             "tagged enum dependencies should include type expressions:\n{tokens}"
         );
-        // Should NOT use Vec::new() since there are fields
+        // The dependencies() body should NOT use Vec::new() since there are fields.
+        // Check that the fn dependencies() section uses vec! (not Vec::new()).
+        let deps_section = tokens
+            .split("fn dependencies")
+            .nth(1)
+            .expect("should have dependencies fn");
         assert!(
-            !tokens.contains("Vec :: new ()"),
+            !deps_section.starts_with(" () -> Vec < String > { Vec :: new () }"),
             "tagged enum with fields should not return empty dependencies:\n{tokens}"
         );
     }
@@ -731,6 +736,193 @@ mod tests {
         assert!(
             !tokens.contains("JsonPolymorphic"),
             "Newtonsoft should NOT use [JsonPolymorphic]:\n{tokens}"
+        );
+    }
+
+    // --- Internally tagged converter tests ---
+
+    #[test]
+    fn stj_csharp9_converter_has_read_method() {
+        let config = stj_config(); // C# 9 default
+        let ir = sample_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        assert!(
+            tokens.contains("JsonDocument.ParseValue"),
+            "STJ converter Read should use JsonDocument.ParseValue:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("GetProperty") && tokens.contains("{tag}"),
+            "STJ converter Read should get discriminator property:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("return tag switch"),
+            "STJ converter Read should contain tag switch:\n{tokens}"
+        );
+        // Switch arms for each variant.
+        assert!(
+            tokens.contains("Request") && tokens.contains("=> new"),
+            "STJ converter Read should have Request arm:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("Text") && tokens.contains("=> new"),
+            "STJ converter Read should have Text arm:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("new Quit()"),
+            "STJ converter Read should have Quit arm:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn stj_csharp9_converter_has_write_method() {
+        let config = stj_config();
+        let ir = sample_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        assert!(
+            tokens.contains("WriteStartObject"),
+            "STJ converter Write should call WriteStartObject:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("WriteString") && tokens.contains("{tag}"),
+            "STJ converter Write should write tag discriminator:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("WriteEndObject"),
+            "STJ converter Write should call WriteEndObject:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("WritePropertyName"),
+            "STJ converter Write should write field properties:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn newtonsoft_converter_has_read_json() {
+        let config = CSharpConfig {
+            serializer: Serializer::Newtonsoft,
+            ..CSharpConfig::default()
+        };
+        let ir = sample_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        assert!(
+            tokens.contains("JObject.Load"),
+            "Newtonsoft converter ReadJson should use JObject.Load:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("ToObject<"),
+            "Newtonsoft converter ReadJson should use ToObject<T>:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("return tag switch"),
+            "Newtonsoft converter ReadJson should contain tag switch:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn newtonsoft_converter_has_write_json() {
+        let config = CSharpConfig {
+            serializer: Serializer::Newtonsoft,
+            ..CSharpConfig::default()
+        };
+        let ir = sample_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        assert!(
+            tokens.contains("WritePropertyName"),
+            "Newtonsoft converter WriteJson should use WritePropertyName:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("WriteValue"),
+            "Newtonsoft converter WriteJson should use WriteValue:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("serializer.Serialize"),
+            "Newtonsoft converter WriteJson should use serializer.Serialize:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn stj_converter_struct_variant_read_has_properties() {
+        let config = stj_config();
+        let ir = sample_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        // The Request variant has an Id field; the Read arm should deserialize it.
+        // In the format template: `{name} = root.GetProperty("{json}").Deserialize<{ty}>(options),`
+        // with format args `name = "Id"`, `json = "id"`.
+        assert!(
+            tokens.contains("GetProperty") && tokens.contains("json"),
+            "struct variant Read arm should access field by JSON name:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("Deserialize<"),
+            "struct variant Read arm should use Deserialize<T>:\n{tokens}"
+        );
+        // Check that the property name and assignment pattern exist in the
+        // format template: `{name} = root.GetProperty`.
+        assert!(
+            tokens.contains("{name} = root.GetProperty"),
+            "struct variant Read arm should assign to property name:\n{tokens}"
+        );
+        // And that the format arg supplies the correct property name.
+        assert!(
+            tokens.contains(r#"name = "Id""#),
+            "struct variant Read arm should bind name to Id:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn stj_converter_newtype_variant_read_has_value() {
+        let config = stj_config();
+        let ir = sample_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        // The Text variant is a newtype; the Read arm should have Value =.
+        assert!(
+            tokens.contains("GetProperty") && tokens.contains("Value"),
+            "newtype variant Read arm should access Value property:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("Value ="),
+            "newtype variant Read arm should assign to Value:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn stj_converter_unit_variant_read_uses_empty_constructor() {
+        let config = stj_config();
+        let ir = sample_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        // The Quit variant is a unit; should use `new Quit()`.
+        assert!(
+            tokens.contains("new Quit()"),
+            "unit variant Read arm should use empty constructor:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn stj_csharp11_has_no_converter_class() {
+        let config = stj_csharp11_config();
+        let ir = sample_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        // C# 11 + STJ uses native [JsonPolymorphic], so no converter class.
+        assert!(
+            !tokens.contains("private sealed class"),
+            "C# 11 + STJ should NOT generate converter class:\n{tokens}"
+        );
+        assert!(
+            !tokens.contains("JsonDocument.ParseValue"),
+            "C# 11 + STJ should NOT contain converter Read body:\n{tokens}"
+        );
+        // Should have the native attributes instead.
+        assert!(
+            tokens.contains("JsonPolymorphic"),
+            "C# 11 + STJ should use native [JsonPolymorphic]:\n{tokens}"
         );
     }
 }

@@ -1508,4 +1508,124 @@ mod tests {
             "untagged Newtonsoft Write should use WriteNull() for unit variants:\n{tokens}"
         );
     }
+
+    // --- Version-dependent record/enum tests ---
+
+    #[test]
+    fn record_csharp10_file_scoped_namespace() {
+        let config = stj_csharp10_config();
+        let ir = sample_ir(false, None);
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        // C# 10+ should use file-scoped namespace with semicolon.
+        assert!(
+            tokens.contains("namespace {ns};"),
+            "C# 10 record should use file-scoped namespace:\n{tokens}"
+        );
+        // Should NOT have the block-scoped opening brace after namespace.
+        assert!(
+            !tokens.contains("namespace {ns}\\n{{"),
+            "C# 10 record should not use block-scoped namespace:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn record_csharp9_block_scoped_namespace() {
+        let config = stj_config(); // default is C# 9
+        let ir = sample_ir(false, None);
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        // C# 9 should use block-scoped namespace (no semicolon after ns).
+        assert!(
+            !tokens.contains("namespace {ns};"),
+            "C# 9 record should NOT use file-scoped namespace:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("namespace {ns}"),
+            "C# 9 record should contain namespace placeholder:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn record_csharp11_required_properties() {
+        let config = stj_csharp11_config();
+        let ir = sample_ir(false, None);
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        // C# 11+ non-optional properties should have `required` modifier.
+        assert!(
+            tokens.contains("required"),
+            "C# 11 record should emit required modifier on non-optional properties:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn record_csharp11_optional_field_no_required() {
+        let config = stj_csharp11_config();
+        let ir = DerivedCSharp {
+            rust_ident: quote::format_ident!("WithOpt"),
+            csharp_name: String::from("WithOpt"),
+            namespace: CSharpNamespace::new("Ns").unwrap(),
+            kind: DerivedCSharpKind::Record(vec![CSharpField {
+                csharp_property_name: String::from("Score"),
+                json_name: String::from("score"),
+                type_expr: quote! { <f64 as csharp_rs::CSharp>::csharp_name() },
+                is_optional: true,
+            }]),
+            export: false,
+            export_to: None,
+        };
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        // Optional properties use a runtime `if is_optional { "" } else { "required " }`
+        // check, so the literal "required " appears in the token stream as a
+        // branch. Verify the guard is correct: `is_optional` should be `true`.
+        assert!(
+            tokens.contains(r#"if true { "" } else { "required " }"#),
+            "C# 11 optional field should guard required behind is_optional=true:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn record_csharp9_no_required() {
+        let config = stj_config(); // default is C# 9
+        let ir = sample_ir(false, None);
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        // C# 9 should not emit `required` modifier.
+        assert!(
+            !tokens.contains("required"),
+            "C# 9 record should NOT emit required modifier:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn enum_csharp10_file_scoped_namespace() {
+        let config = stj_csharp10_config();
+        let ir = sample_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        // C# 10+ should use file-scoped namespace.
+        assert!(
+            tokens.contains("namespace Test.Ns;"),
+            "C# 10 enum should use file-scoped namespace:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn enum_csharp9_block_scoped_namespace() {
+        let config = stj_config(); // default is C# 9
+        let ir = sample_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        // C# 9 should use block-scoped namespace.
+        assert!(
+            !tokens.contains("namespace Test.Ns;"),
+            "C# 9 enum should NOT use file-scoped namespace:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("namespace Test.Ns"),
+            "C# 9 enum should contain namespace:\n{tokens}"
+        );
+    }
 }

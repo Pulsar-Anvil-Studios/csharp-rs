@@ -1,4 +1,4 @@
-// Rust guideline compliant 2026-02-10
+// Rust guideline compliant 2026-02-11
 //! Type dispatch and intermediate representation for C# code generation.
 //!
 //! Dispatches `syn::DeriveInput` to the appropriate handler based on the
@@ -37,7 +37,6 @@ pub struct CSharpVariant {
 
 /// How the enum is tagged in JSON (from serde attributes).
 #[derive(Debug)]
-#[allow(dead_code, reason = "fields read by codegen (Task 5+)")]
 pub enum EnumTagging {
     /// Default serde: `{"VariantName": data}` / `"UnitVariant"`.
     External,
@@ -51,7 +50,6 @@ pub enum EnumTagging {
 
 /// Data carried by a variant in a tagged enum.
 #[derive(Debug)]
-#[allow(dead_code, reason = "fields read by codegen (Task 5+)")]
 pub enum TaggedVariantData {
     /// No data (unit variant).
     Unit,
@@ -63,7 +61,6 @@ pub enum TaggedVariantData {
 
 /// A variant in a tagged enum.
 #[derive(Debug)]
-#[allow(dead_code, reason = "fields read by codegen (Task 5+)")]
 pub struct TaggedVariant {
     /// C# record name (`PascalCase`, from Rust variant ident).
     pub csharp_name: String,
@@ -81,7 +78,6 @@ pub enum DerivedCSharpKind {
     /// A `public enum` with unit variants (from a Rust enum).
     Enum(Vec<CSharpVariant>),
     /// A tagged enum hierarchy (from a Rust enum with data variants).
-    #[allow(dead_code, reason = "fields read by codegen (Task 5+)")]
     TaggedEnum {
         /// The tagging strategy derived from serde attributes.
         tagging: EnumTagging,

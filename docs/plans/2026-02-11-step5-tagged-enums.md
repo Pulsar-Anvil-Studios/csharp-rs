@@ -115,7 +115,7 @@ Expected: ALL PASS
 
 **Step 5: Run full workspace tests (no regressions)**
 
-Run: `cargo test --workspace && cargo clippy --workspace`
+Run: `cargo fmt --workspace && cargo test --workspace && cargo clippy --workspace`
 Expected: ALL PASS, no clippy warnings.
 
 **Step 6: Commit**
@@ -605,7 +605,7 @@ Expected: ALL PASS
 
 **Step 5: Run full test suite**
 
-Run: `cargo test --workspace && cargo clippy --workspace`
+Run: `cargo fmt --workspace && cargo test --workspace && cargo clippy --workspace`
 Expected: ALL PASS. Existing tests still work. The dispatch tests from Task 2 now work too (no more `todo!()`). However, codegen tests for tagged enums will fail since codegen doesn't handle `TaggedEnum` yet — that's fine if those integration tests don't exist yet.
 
 **Step 6: Commit**
@@ -647,7 +647,7 @@ This is a **pure refactor**: extract `build_record_definition` into `codegen/rec
 
 **Step 2: Run all tests — no behavior change**
 
-Run: `cargo test --workspace && cargo clippy --workspace`
+Run: `cargo fmt --workspace && cargo test --workspace && cargo clippy --workspace`
 Expected: ALL existing 148 tests PASS. This is a pure refactor.
 
 **Step 3: Commit**
@@ -1068,9 +1068,22 @@ feat(codegen): implement dependencies for tagged enums and final cleanup
 
 ---
 
-## Verification checklist
+## Pre-commit checklist
+
+Run **before every commit** in this plan:
 
 ```bash
+cargo fmt --workspace                            # format code
+cargo test --workspace                           # all tests pass
+cargo clippy --workspace                         # no warnings
+```
+
+## Verification checklist
+
+Run at the end of the plan for final validation:
+
+```bash
+cargo fmt --workspace --check                    # formatting clean
 cargo test --workspace                           # all tests pass
 cargo clippy --workspace                         # no warnings
 cargo llvm-cov --workspace --html --open         # visual coverage review

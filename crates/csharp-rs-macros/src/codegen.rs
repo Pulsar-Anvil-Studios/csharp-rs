@@ -43,6 +43,7 @@ impl DerivedCSharp {
         match &self.kind {
             DerivedCSharpKind::Record(fields) => self.build_record_definition(fields, config),
             DerivedCSharpKind::Enum(variants) => self.build_enum_definition(variants, config),
+            DerivedCSharpKind::TaggedEnum { .. } => todo!("tagged enum codegen \u{2014} Task 5"),
         }
     }
 
@@ -200,6 +201,7 @@ impl DerivedCSharp {
                 }
             }
             DerivedCSharpKind::Enum(_) => quote! { Vec::new() },
+            DerivedCSharpKind::TaggedEnum { .. } => todo!("tagged enum codegen \u{2014} Task 5"),
         }
     }
 

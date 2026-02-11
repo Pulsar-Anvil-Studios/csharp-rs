@@ -159,7 +159,7 @@ mod tests {
     fn extract_fields(ir: &DerivedCSharp) -> &[CSharpField] {
         match &ir.kind {
             DerivedCSharpKind::Record(fields) => fields,
-            DerivedCSharpKind::Enum(_) => panic!("expected Record kind"),
+            _ => panic!("expected Record kind"),
         }
     }
 

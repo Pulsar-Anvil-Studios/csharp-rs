@@ -6,6 +6,7 @@
 
 pub mod named;
 pub mod simple_enum;
+pub mod tagged_enum;
 
 use crate::attr::container::ContainerAttr;
 use crate::config::{CSharpConfig, CSharpNamespace};
@@ -34,6 +35,44 @@ pub struct CSharpVariant {
     pub json_name: String,
 }
 
+/// How the enum is tagged in JSON (from serde attributes).
+#[derive(Debug)]
+#[allow(dead_code, reason = "constructed in tagged_enum builder (Task 3)")]
+pub enum EnumTagging {
+    /// Default serde: `{"VariantName": data}` / `"UnitVariant"`.
+    External,
+    /// `#[serde(tag = "...")]`: discriminator merged into object.
+    Internal { tag: String },
+    /// `#[serde(tag = "...", content = "...")]`: separate tag and content keys.
+    Adjacent { tag: String, content: String },
+    /// `#[serde(untagged)]`: no discriminator, try each variant.
+    Untagged,
+}
+
+/// Data carried by a variant in a tagged enum.
+#[derive(Debug)]
+#[allow(dead_code, reason = "constructed in tagged_enum builder (Task 3)")]
+pub enum TaggedVariantData {
+    /// No data (unit variant).
+    Unit,
+    /// Wraps a single type: `Variant(Type)`.
+    Newtype { type_expr: TokenStream },
+    /// Named fields: `Variant { field: Type, ... }`.
+    Struct(Vec<CSharpField>),
+}
+
+/// A variant in a tagged enum.
+#[derive(Debug)]
+#[allow(dead_code, reason = "constructed in tagged_enum builder (Task 3)")]
+pub struct TaggedVariant {
+    /// C# record name (`PascalCase`, from Rust variant ident).
+    pub csharp_name: String,
+    /// JSON discriminator value (after `rename_all` / per-variant `rename`).
+    pub json_name: String,
+    /// Data carried by this variant.
+    pub data: TaggedVariantData,
+}
+
 /// The kind of C# type being generated.
 #[derive(Debug)]
 pub enum DerivedCSharpKind {
@@ -41,6 +80,14 @@ pub enum DerivedCSharpKind {
     Record(Vec<CSharpField>),
     /// A `public enum` with unit variants (from a Rust enum).
     Enum(Vec<CSharpVariant>),
+    /// A tagged enum hierarchy (from a Rust enum with data variants).
+    #[allow(dead_code, reason = "constructed in tagged_enum builder (Task 3)")]
+    TaggedEnum {
+        /// The tagging strategy derived from serde attributes.
+        tagging: EnumTagging,
+        /// The variants with their data payloads.
+        variants: Vec<TaggedVariant>,
+    },
 }
 
 /// Intermediate representation for a derived C# type.
@@ -90,7 +137,17 @@ pub fn process_input(input: &DeriveInput, config: &CSharpConfig) -> syn::Result<
             "csharp-rs: unit structs are not yet supported",
         )),
 
-        Data::Enum(enum_data) => simple_enum::simple_enum(input, enum_data, &container, config),
+        Data::Enum(enum_data) => {
+            let has_data_variants = enum_data.variants.iter().any(|v| !v.fields.is_empty());
+            let has_explicit_tagging =
+                container.tag.is_some() || container.content.is_some() || container.untagged;
+
+            if has_data_variants || has_explicit_tagging {
+                tagged_enum::tagged_enum(input, enum_data, &container, config)
+            } else {
+                simple_enum::simple_enum(input, enum_data, &container, config)
+            }
+        }
 
         Data::Union(_) => Err(syn::Error::new_spanned(
             &input.ident,
@@ -119,10 +176,10 @@ mod tests {
         assert!(result.is_ok());
         let ir = result.unwrap();
         assert_eq!(ir.csharp_name, "Foo");
-        match &ir.kind {
-            DerivedCSharpKind::Record(fields) => assert_eq!(fields.len(), 1),
-            DerivedCSharpKind::Enum(_) => panic!("expected Record kind"),
-        }
+        assert!(
+            matches!(&ir.kind, DerivedCSharpKind::Record(fields) if fields.len() == 1),
+            "expected Record kind with 1 field"
+        );
     }
 
     #[test]
@@ -166,27 +223,25 @@ mod tests {
         assert!(result.is_ok());
         let ir = result.unwrap();
         assert_eq!(ir.csharp_name, "Color");
-        match &ir.kind {
-            DerivedCSharpKind::Enum(variants) => assert_eq!(variants.len(), 3),
-            DerivedCSharpKind::Record(_) => panic!("expected Enum kind"),
-        }
+        assert!(
+            matches!(&ir.kind, DerivedCSharpKind::Enum(variants) if variants.len() == 3),
+            "expected Enum kind with 3 variants"
+        );
     }
 
     #[test]
-    fn enum_with_tuple_variant_errors() {
+    #[should_panic(expected = "tagged_enum IR builder")]
+    fn enum_with_tuple_variant_routes_to_tagged_enum() {
+        // With the new dispatch, an enum with data variants routes to
+        // `tagged_enum` which is currently `todo!()`. Task 3 will replace
+        // this test with proper error handling validation.
         let input: DeriveInput = parse_quote! {
             enum Message {
                 Quit,
                 Data(String),
             }
         };
-        let result = process_input(&input, &default_config());
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("only unit variants"),
-            "error should mention unit variants: {err}"
-        );
+        let _ = process_input(&input, &default_config());
     }
 
     #[test]
@@ -204,5 +259,33 @@ mod tests {
             err.contains("unions are not supported"),
             "error should mention unions: {err}"
         );
+    }
+
+    #[test]
+    fn enum_with_struct_variant_and_tag_routes_to_tagged() {
+        // Verify the dispatch condition: an enum with `#[serde(tag = "type")]`
+        // has `container.tag` set, which triggers the tagged enum path.
+        // We cannot test the full output yet because `tagged_enum()` is `todo!()`.
+        let input: DeriveInput = parse_quote! {
+            #[serde(tag = "type")]
+            enum Message {
+                Quit,
+            }
+        };
+        let container = ContainerAttr::from_attrs(&input.attrs).unwrap();
+        assert!(container.tag.is_some());
+    }
+
+    #[test]
+    fn all_unit_without_tag_stays_simple_enum() {
+        let input: DeriveInput = parse_quote! {
+            enum Color {
+                Red,
+                Green,
+            }
+        };
+        let result = process_input(&input, &default_config());
+        assert!(result.is_ok());
+        assert!(matches!(result.unwrap().kind, DerivedCSharpKind::Enum(_)));
     }
 }

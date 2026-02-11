@@ -1325,4 +1325,187 @@ mod tests {
             "Newtonsoft adjacent Write unit variant should NOT write content key:\n{quit_section}"
         );
     }
+
+    // --- Untagged enum test helpers ---
+
+    /// Builds an untagged enum IR with a struct variant (`Request`), a newtype
+    /// variant (`Text`), and a unit variant (`Quit`).
+    fn sample_untagged_enum_ir() -> DerivedCSharp {
+        DerivedCSharp {
+            rust_ident: quote::format_ident!("Message"),
+            csharp_name: String::from("Message"),
+            namespace: CSharpNamespace::new("Test.Ns").unwrap(),
+            kind: DerivedCSharpKind::TaggedEnum {
+                tagging: EnumTagging::Untagged,
+                variants: vec![
+                    TaggedVariant {
+                        csharp_name: String::from("Request"),
+                        json_name: String::from("Request"),
+                        data: TaggedVariantData::Struct(vec![CSharpField {
+                            csharp_property_name: String::from("Id"),
+                            json_name: String::from("id"),
+                            type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                            is_optional: false,
+                        }]),
+                    },
+                    TaggedVariant {
+                        csharp_name: String::from("Text"),
+                        json_name: String::from("Text"),
+                        data: TaggedVariantData::Newtype {
+                            type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                        },
+                    },
+                    TaggedVariant {
+                        csharp_name: String::from("Quit"),
+                        json_name: String::from("Quit"),
+                        data: TaggedVariantData::Unit,
+                    },
+                ],
+            },
+            export: false,
+            export_to: None,
+        }
+    }
+
+    // --- Untagged converter tests ---
+
+    #[test]
+    fn untagged_stj_has_converter() {
+        let config = stj_config();
+        let ir = sample_untagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        assert!(
+            tokens.contains("JsonConverter"),
+            "untagged STJ should have [JsonConverter] attribute:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("MessageConverter"),
+            "untagged STJ should reference MessageConverter:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("private sealed class"),
+            "untagged STJ should generate converter class:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn untagged_stj_read_tries_variants() {
+        let config = stj_config();
+        let ir = sample_untagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        // Untagged Read should use try/catch to attempt each variant.
+        assert!(
+            tokens.contains("try"),
+            "untagged STJ Read should use try blocks:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("catch (Exception)"),
+            "untagged STJ Read should catch Exception:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("No matching variant"),
+            "untagged STJ Read should throw when no variant matches:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn untagged_stj_read_unit_checks_null() {
+        let config = stj_config();
+        let ir = sample_untagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        // Unit variant should check for JsonValueKind.Null.
+        assert!(
+            tokens.contains("ValueKind.Null"),
+            "untagged STJ Read should check ValueKind.Null for unit variants:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("new Quit()"),
+            "untagged STJ Read should construct Quit with empty ctor:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn untagged_stj_write_unit_writes_null() {
+        let config = stj_config();
+        let ir = sample_untagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        // Unit variant Write should emit null.
+        assert!(
+            tokens.contains("WriteNullValue"),
+            "untagged STJ Write should use WriteNullValue for unit variants:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn untagged_stj_write_newtype_direct() {
+        let config = stj_config();
+        let ir = sample_untagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        // Newtype variant Write should serialize the value directly (no wrapping
+        // object, no tag).
+        assert!(
+            tokens.contains("JsonSerializer.Serialize(writer,"),
+            "untagged STJ Write should serialize value directly:\n{tokens}"
+        );
+        // The text variant uses `text.Value` pattern.
+        assert!(
+            tokens.contains(".Value, options)"),
+            "untagged STJ Write should access .Value on newtype variant:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn untagged_newtonsoft_has_converter() {
+        let config = newtonsoft_config();
+        let ir = sample_untagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        assert!(
+            tokens.contains("JsonConverter"),
+            "untagged Newtonsoft should have [JsonConverter] attribute:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("MessageConverter"),
+            "untagged Newtonsoft should reference MessageConverter:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("Newtonsoft.Json"),
+            "untagged Newtonsoft should have using directive:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn untagged_newtonsoft_read_uses_jtoken() {
+        let config = newtonsoft_config();
+        let ir = sample_untagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        // Untagged Newtonsoft Read should use JToken.ReadFrom for buffering.
+        assert!(
+            tokens.contains("JToken.ReadFrom"),
+            "untagged Newtonsoft Read should use JToken.ReadFrom:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("JTokenType.Null"),
+            "untagged Newtonsoft Read should check JTokenType.Null for unit:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn untagged_newtonsoft_write_unit_writes_null() {
+        let config = newtonsoft_config();
+        let ir = sample_untagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        // Unit variant Write should emit null via WriteNull().
+        assert!(
+            tokens.contains("WriteNull()"),
+            "untagged Newtonsoft Write should use WriteNull() for unit variants:\n{tokens}"
+        );
+    }
 }

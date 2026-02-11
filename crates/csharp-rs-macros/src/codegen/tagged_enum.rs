@@ -368,7 +368,24 @@ fn build_converter_block(
             }
         }
         EnumTagging::Untagged => {
-            todo!("converter generation for untagged mode")
+            let base_indent = if use_file_scoped_ns {
+                "    "
+            } else {
+                "        "
+            };
+
+            match config.serializer {
+                Serializer::SystemTextJson => Some(build_untagged_stj_converter(
+                    csharp_name,
+                    variants,
+                    base_indent,
+                )),
+                Serializer::Newtonsoft => Some(build_untagged_newtonsoft_converter(
+                    csharp_name,
+                    variants,
+                    base_indent,
+                )),
+            }
         }
     }
 }
@@ -2070,6 +2087,534 @@ fn build_adjacent_newtonsoft_write_struct_arm(
          {body_indent}writer.WriteStartObject();\n\
          {fields_block}\n\
          {body_indent}writer.WriteEndObject();\n\
+         {body_indent}writer.WriteEndObject();\n\
+         {body_indent}break;",
+    );
+
+    quote! { String::from(#arm) }
+}
+
+/// Builds the STJ `JsonConverter<T>` for untagged enums.
+///
+/// Untagged enums have no discriminator; deserialization tries each variant in
+/// declaration order using try/catch. Unit variants serialize as `null`, newtype
+/// variants serialize their value directly, and struct variants serialize as
+/// flat objects without any wrapping.
+fn build_untagged_stj_converter(
+    csharp_name: &str,
+    variants: &[TaggedVariant],
+    base_indent: &str,
+) -> TokenStream {
+    let inner = format!("{base_indent}    ");
+    let inner2 = format!("{inner}    ");
+    let inner3 = format!("{inner2}    ");
+
+    let read_attempts: Vec<TokenStream> = variants
+        .iter()
+        .map(|v| build_untagged_stj_read_attempt(v, &inner2, &inner3))
+        .collect();
+
+    let write_arms: Vec<TokenStream> = variants
+        .iter()
+        .map(|v| build_untagged_stj_write_arm(v, &inner3, &format!("{inner3}    ")))
+        .collect();
+
+    quote! {
+        {
+            let mut read_parts: Vec<String> = Vec::new();
+            #(read_parts.push(#read_attempts);)*
+
+            let mut write_parts: Vec<String> = Vec::new();
+            #(write_parts.push(#write_arms);)*
+
+            let read_block = read_parts.join("\n");
+            let write_block = write_parts.join("\n");
+
+            format!(
+                "\n\
+                 {base}private sealed class {name}Converter : JsonConverter<{name}>\n\
+                 {base}{{\n\
+                 {i1}public override {name} Read(\n\
+                 {i2}ref Utf8JsonReader reader,\n\
+                 {i2}Type typeToConvert,\n\
+                 {i2}JsonSerializerOptions options)\n\
+                 {i1}{{\n\
+                 {i2}using var doc = JsonDocument.ParseValue(ref reader);\n\
+                 {i2}var root = doc.RootElement;\n\
+                 \n\
+                 {read}\n\
+                 \n\
+                 {i2}throw new JsonException(\"No matching variant found for {name}\");\n\
+                 {i1}}}\n\
+                 \n\
+                 {i1}public override void Write(\n\
+                 {i2}Utf8JsonWriter writer,\n\
+                 {i2}{name} value,\n\
+                 {i2}JsonSerializerOptions options)\n\
+                 {i1}{{\n\
+                 {i2}switch (value)\n\
+                 {i2}{{\n\
+                 {write}\n\
+                 {i2}}}\n\
+                 {i1}}}\n\
+                 {base}}}",
+                base = #base_indent,
+                name = #csharp_name,
+                i1 = #inner,
+                i2 = #inner2,
+                read = read_block,
+                write = write_block,
+            )
+        }
+    }
+}
+
+/// Builds a single STJ Read attempt block for a variant in untagged mode.
+///
+/// Unit variants check `ValueKind.Null`. Data variants use a `try`/`catch`
+/// block to attempt construction from the parsed JSON element. Variants are
+/// tried in declaration order; the first successful match wins.
+fn build_untagged_stj_read_attempt(
+    variant: &TaggedVariant,
+    attempt_indent: &str,
+    body_indent: &str,
+) -> TokenStream {
+    let csharp_name = &variant.csharp_name;
+
+    match &variant.data {
+        TaggedVariantData::Unit => {
+            // Unit variants: check for null.
+            let block = format!(
+                "{attempt_indent}if (root.ValueKind == JsonValueKind.Null)\n\
+                 {attempt_indent}{{\n\
+                 {body_indent}return new {csharp_name}();\n\
+                 {attempt_indent}}}",
+            );
+            quote! { String::from(#block) }
+        }
+        TaggedVariantData::Newtype { type_expr } => {
+            quote! {
+                {
+                    let csharp_type = #type_expr;
+                    format!(
+                        "{ai}try\n\
+                         {ai}{{\n\
+                         {bi}var val = root.Deserialize<{ty}>(options);\n\
+                         {bi}return new {name} {{ Value = val }};\n\
+                         {ai}}}\n\
+                         {ai}catch (Exception) {{ }}",
+                        ai = #attempt_indent,
+                        bi = #body_indent,
+                        ty = csharp_type,
+                        name = #csharp_name,
+                    )
+                }
+            }
+        }
+        TaggedVariantData::Struct(fields) => {
+            build_untagged_stj_read_struct_attempt(csharp_name, fields, attempt_indent, body_indent)
+        }
+    }
+}
+
+/// Builds a STJ Read try/catch block for a struct variant in untagged mode.
+///
+/// Attempts to extract each field via `root.GetProperty(...)`, constructing
+/// the variant record if all fields are found.
+fn build_untagged_stj_read_struct_attempt(
+    csharp_name: &str,
+    fields: &[CSharpField],
+    attempt_indent: &str,
+    body_indent: &str,
+) -> TokenStream {
+    let field_exprs: Vec<TokenStream> = fields
+        .iter()
+        .map(|f| {
+            let prop_name = &f.csharp_property_name;
+            let field_json = &f.json_name;
+            let type_expr = &f.type_expr;
+
+            quote! {
+                {
+                    let csharp_type = #type_expr;
+                    format!(
+                        "{bi}    {name} = root.GetProperty(\"{json}\").Deserialize<{ty}>(options),",
+                        bi = #body_indent,
+                        name = #prop_name,
+                        json = #field_json,
+                        ty = csharp_type,
+                    )
+                }
+            }
+        })
+        .collect();
+
+    quote! {
+        {
+            let field_lines: Vec<String> = vec![#(#field_exprs),*];
+            let fields_str = field_lines.join("\n");
+            format!(
+                "{ai}try\n\
+                 {ai}{{\n\
+                 {bi}return new {name}\n\
+                 {bi}{{\n\
+                 {fields}\n\
+                 {bi}}};\n\
+                 {ai}}}\n\
+                 {ai}catch (Exception) {{ }}",
+                ai = #attempt_indent,
+                bi = #body_indent,
+                name = #csharp_name,
+                fields = fields_str,
+            )
+        }
+    }
+}
+
+/// Builds a single STJ Write switch arm for a variant in untagged mode.
+///
+/// No discriminator is written. Unit variants emit `WriteNullValue()`. Newtype
+/// variants serialize their value directly. Struct variants write a flat object
+/// with their fields.
+fn build_untagged_stj_write_arm(
+    variant: &TaggedVariant,
+    case_indent: &str,
+    body_indent: &str,
+) -> TokenStream {
+    let csharp_name = &variant.csharp_name;
+    let var_name = variant.csharp_name.to_lowercase();
+
+    match &variant.data {
+        TaggedVariantData::Unit => {
+            let arm = format!(
+                "{case_indent}case {csharp_name}:\n\
+                 {body_indent}writer.WriteNullValue();\n\
+                 {body_indent}break;",
+            );
+            quote! { String::from(#arm) }
+        }
+        TaggedVariantData::Newtype { type_expr } => {
+            quote! {
+                {
+                    let _ty = #type_expr;
+                    format!(
+                        "{ci}case {name} {var}:\n\
+                         {bi}JsonSerializer.Serialize(writer, {var}.Value, options);\n\
+                         {bi}break;",
+                        ci = #case_indent,
+                        name = #csharp_name,
+                        var = #var_name,
+                        bi = #body_indent,
+                    )
+                }
+            }
+        }
+        TaggedVariantData::Struct(fields) => build_untagged_stj_write_struct_arm(
+            csharp_name,
+            &var_name,
+            fields,
+            case_indent,
+            body_indent,
+        ),
+    }
+}
+
+/// Builds a STJ Write switch arm for a struct variant in untagged mode.
+///
+/// Writes a flat object containing just the struct fields, with no
+/// discriminator or wrapping.
+fn build_untagged_stj_write_struct_arm(
+    csharp_name: &str,
+    var_name: &str,
+    fields: &[CSharpField],
+    case_indent: &str,
+    body_indent: &str,
+) -> TokenStream {
+    let field_lines: Vec<String> = fields
+        .iter()
+        .map(|f| {
+            let json = &f.json_name;
+            let prop = &f.csharp_property_name;
+            format!(
+                "{body_indent}writer.WritePropertyName(\"{json}\");\n\
+                 {body_indent}JsonSerializer.Serialize(writer, {var_name}.{prop}, options);",
+            )
+        })
+        .collect();
+
+    let fields_block = field_lines.join("\n");
+
+    let arm = format!(
+        "{case_indent}case {csharp_name} {var_name}:\n\
+         {body_indent}writer.WriteStartObject();\n\
+         {fields_block}\n\
+         {body_indent}writer.WriteEndObject();\n\
+         {body_indent}break;",
+    );
+
+    quote! { String::from(#arm) }
+}
+
+/// Builds the Newtonsoft `JsonConverter<T>` for untagged enums.
+///
+/// Uses `JToken.ReadFrom(reader)` for buffered deserialization and tries each
+/// variant in declaration order. Unit variants check `JTokenType.Null`. Data
+/// variants use try/catch. Write emits raw content with no discriminator.
+fn build_untagged_newtonsoft_converter(
+    csharp_name: &str,
+    variants: &[TaggedVariant],
+    base_indent: &str,
+) -> TokenStream {
+    let inner = format!("{base_indent}    ");
+    let inner2 = format!("{inner}    ");
+    let inner3 = format!("{inner2}    ");
+
+    let read_attempts: Vec<TokenStream> = variants
+        .iter()
+        .map(|v| build_untagged_newtonsoft_read_attempt(v, &inner2, &inner3))
+        .collect();
+
+    let write_arms: Vec<TokenStream> = variants
+        .iter()
+        .map(|v| build_untagged_newtonsoft_write_arm(v, &inner3, &format!("{inner3}    ")))
+        .collect();
+
+    quote! {
+        {
+            let mut read_parts: Vec<String> = Vec::new();
+            #(read_parts.push(#read_attempts);)*
+
+            let mut write_parts: Vec<String> = Vec::new();
+            #(write_parts.push(#write_arms);)*
+
+            let read_block = read_parts.join("\n");
+            let write_block = write_parts.join("\n");
+
+            format!(
+                "\n\
+                 {base}private sealed class {name}Converter : JsonConverter<{name}>\n\
+                 {base}{{\n\
+                 {i1}public override {name} ReadJson(\n\
+                 {i2}JsonReader reader,\n\
+                 {i2}Type objectType,\n\
+                 {i2}{name} existingValue,\n\
+                 {i2}bool hasExistingValue,\n\
+                 {i2}JsonSerializer serializer)\n\
+                 {i1}{{\n\
+                 {i2}var token = JToken.ReadFrom(reader);\n\
+                 \n\
+                 {read}\n\
+                 \n\
+                 {i2}throw new JsonException(\"No matching variant found for {name}\");\n\
+                 {i1}}}\n\
+                 \n\
+                 {i1}public override void WriteJson(\n\
+                 {i2}JsonWriter writer,\n\
+                 {i2}{name} value,\n\
+                 {i2}JsonSerializer serializer)\n\
+                 {i1}{{\n\
+                 {i2}switch (value)\n\
+                 {i2}{{\n\
+                 {write}\n\
+                 {i2}}}\n\
+                 {i1}}}\n\
+                 {base}}}",
+                base = #base_indent,
+                name = #csharp_name,
+                i1 = #inner,
+                i2 = #inner2,
+                read = read_block,
+                write = write_block,
+            )
+        }
+    }
+}
+
+/// Builds a single Newtonsoft Read attempt block for a variant in untagged
+/// mode.
+///
+/// Unit variants check `token.Type == JTokenType.Null`. Newtype variants use
+/// `token.ToObject<T>(serializer)`. Struct variants cast to `JObject` and
+/// extract fields. All data variants are wrapped in try/catch.
+fn build_untagged_newtonsoft_read_attempt(
+    variant: &TaggedVariant,
+    attempt_indent: &str,
+    body_indent: &str,
+) -> TokenStream {
+    let csharp_name = &variant.csharp_name;
+
+    match &variant.data {
+        TaggedVariantData::Unit => {
+            // Unit variants: check for null token.
+            let block = format!(
+                "{attempt_indent}if (token.Type == JTokenType.Null)\n\
+                 {attempt_indent}{{\n\
+                 {body_indent}return new {csharp_name}();\n\
+                 {attempt_indent}}}",
+            );
+            quote! { String::from(#block) }
+        }
+        TaggedVariantData::Newtype { type_expr } => {
+            quote! {
+                {
+                    let csharp_type = #type_expr;
+                    format!(
+                        "{ai}try\n\
+                         {ai}{{\n\
+                         {bi}var val = token.ToObject<{ty}>(serializer);\n\
+                         {bi}return new {name} {{ Value = val }};\n\
+                         {ai}}}\n\
+                         {ai}catch (Exception) {{ }}",
+                        ai = #attempt_indent,
+                        bi = #body_indent,
+                        ty = csharp_type,
+                        name = #csharp_name,
+                    )
+                }
+            }
+        }
+        TaggedVariantData::Struct(fields) => build_untagged_newtonsoft_read_struct_attempt(
+            csharp_name,
+            fields,
+            attempt_indent,
+            body_indent,
+        ),
+    }
+}
+
+/// Builds a Newtonsoft Read try/catch block for a struct variant in untagged
+/// mode.
+///
+/// Casts the token to `JObject` and extracts each field via indexing and
+/// `ToObject<T>(serializer)`.
+fn build_untagged_newtonsoft_read_struct_attempt(
+    csharp_name: &str,
+    fields: &[CSharpField],
+    attempt_indent: &str,
+    body_indent: &str,
+) -> TokenStream {
+    let field_exprs: Vec<TokenStream> = fields
+        .iter()
+        .map(|f| {
+            let prop_name = &f.csharp_property_name;
+            let field_json = &f.json_name;
+            let type_expr = &f.type_expr;
+
+            quote! {
+                {
+                    let csharp_type = #type_expr;
+                    format!(
+                        "{bi}    {name} = obj[\"{json}\"].ToObject<{ty}>(serializer),",
+                        bi = #body_indent,
+                        name = #prop_name,
+                        json = #field_json,
+                        ty = csharp_type,
+                    )
+                }
+            }
+        })
+        .collect();
+
+    quote! {
+        {
+            let field_lines: Vec<String> = vec![#(#field_exprs),*];
+            let fields_str = field_lines.join("\n");
+            format!(
+                "{ai}try\n\
+                 {ai}{{\n\
+                 {bi}var obj = (JObject)token;\n\
+                 {bi}return new {name}\n\
+                 {bi}{{\n\
+                 {fields}\n\
+                 {bi}}};\n\
+                 {ai}}}\n\
+                 {ai}catch (Exception) {{ }}",
+                ai = #attempt_indent,
+                bi = #body_indent,
+                name = #csharp_name,
+                fields = fields_str,
+            )
+        }
+    }
+}
+
+/// Builds a single Newtonsoft Write switch arm for a variant in untagged mode.
+///
+/// No discriminator is written. Unit variants emit `WriteNull()`. Newtype
+/// variants use `serializer.Serialize(writer, val.Value)`. Struct variants
+/// write a flat object with their fields.
+fn build_untagged_newtonsoft_write_arm(
+    variant: &TaggedVariant,
+    case_indent: &str,
+    body_indent: &str,
+) -> TokenStream {
+    let csharp_name = &variant.csharp_name;
+    let var_name = variant.csharp_name.to_lowercase();
+
+    match &variant.data {
+        TaggedVariantData::Unit => {
+            let arm = format!(
+                "{case_indent}case {csharp_name}:\n\
+                 {body_indent}writer.WriteNull();\n\
+                 {body_indent}break;",
+            );
+            quote! { String::from(#arm) }
+        }
+        TaggedVariantData::Newtype { type_expr } => {
+            quote! {
+                {
+                    let _ty = #type_expr;
+                    format!(
+                        "{ci}case {name} {var}:\n\
+                         {bi}serializer.Serialize(writer, {var}.Value);\n\
+                         {bi}break;",
+                        ci = #case_indent,
+                        name = #csharp_name,
+                        var = #var_name,
+                        bi = #body_indent,
+                    )
+                }
+            }
+        }
+        TaggedVariantData::Struct(fields) => build_untagged_newtonsoft_write_struct_arm(
+            csharp_name,
+            &var_name,
+            fields,
+            case_indent,
+            body_indent,
+        ),
+    }
+}
+
+/// Builds a Newtonsoft Write switch arm for a struct variant in untagged mode.
+///
+/// Writes a flat object containing just the struct fields, with no
+/// discriminator or wrapping.
+fn build_untagged_newtonsoft_write_struct_arm(
+    csharp_name: &str,
+    var_name: &str,
+    fields: &[CSharpField],
+    case_indent: &str,
+    body_indent: &str,
+) -> TokenStream {
+    let field_lines: Vec<String> = fields
+        .iter()
+        .map(|f| {
+            let json = &f.json_name;
+            let prop = &f.csharp_property_name;
+            format!(
+                "{body_indent}writer.WritePropertyName(\"{json}\");\n\
+                 {body_indent}serializer.Serialize(writer, {var_name}.{prop});",
+            )
+        })
+        .collect();
+
+    let fields_block = field_lines.join("\n");
+
+    let arm = format!(
+        "{case_indent}case {csharp_name} {var_name}:\n\
+         {body_indent}writer.WriteStartObject();\n\
+         {fields_block}\n\
          {body_indent}writer.WriteEndObject();\n\
          {body_indent}break;",
     );

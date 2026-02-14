@@ -1,4 +1,4 @@
-// Rust guideline compliant 2026-02-11
+// Rust guideline compliant 2026-02-14
 //! Type dispatch and intermediate representation for C# code generation.
 //!
 //! Dispatches `syn::DeriveInput` to the appropriate handler based on the
@@ -13,17 +13,53 @@ use crate::config::{CSharpConfig, CSharpNamespace};
 use proc_macro2::{Ident, TokenStream};
 use syn::{Data, DataStruct, DeriveInput, Fields};
 
-/// A C# field in the intermediate representation.
+/// How a field is flattened into the parent record.
+#[derive(Debug)]
+pub enum FlattenKind {
+    /// Normal field (not flattened).
+    None,
+    /// Struct flatten: inline the inner type's properties.
+    Struct,
+    /// `HashMap` flatten: emit `[JsonExtensionData]` property.
+    HashMap {
+        /// Token stream for `<K as CSharp>::csharp_name()`.
+        key_expr: TokenStream,
+        /// Token stream for `<V as CSharp>::csharp_name()`.
+        value_expr: TokenStream,
+    },
+}
+
+/// A single field in a C# record or tagged enum struct variant.
+///
+/// # Flatten invariants
+///
+/// When `flatten` is [`FlattenKind::None`], all fields are meaningful.
+///
+/// When `flatten` is [`FlattenKind::Struct`], only `type_expr` is meaningful
+/// (it evaluates to the inner type's `csharp_fields()` call). The
+/// `csharp_property_name`, `json_name` fields are empty strings, and
+/// `is_optional` is `false`.
+///
+/// When `flatten` is [`FlattenKind::HashMap`], none of the standard fields
+/// are meaningful — the key/value types live inside the `FlattenKind` variant.
+/// All string fields are empty, `type_expr` is an empty `TokenStream`, and
+/// `is_optional` is `false`.
 #[derive(Debug)]
 pub struct CSharpField {
-    /// C# property name (`PascalCase`).
+    /// C# `PascalCase` property name (empty for flatten fields).
     pub csharp_property_name: String,
-    /// JSON serialization name (after `rename_all`).
+    /// JSON wire name for serialization attributes (empty for flatten fields).
     pub json_name: String,
-    /// Token stream that evaluates to the C# type name at compile time.
+    /// Expression evaluating to the C# type name at consumer compile time.
+    ///
+    /// For `FlattenKind::None`: evaluates to `CSharp::csharp_name()`.
+    /// For `FlattenKind::Struct`: evaluates to `CSharp::csharp_fields()`.
+    /// For `FlattenKind::HashMap`: empty `TokenStream` (unused).
     pub type_expr: TokenStream,
-    /// Whether this field is `Option<T>` (nullable in C#).
+    /// Whether this field is `Option<T>` (always `false` for flatten fields).
     pub is_optional: bool,
+    /// How this field participates in flatten inlining.
+    pub flatten: FlattenKind,
 }
 
 /// A C# enum variant in the intermediate representation.

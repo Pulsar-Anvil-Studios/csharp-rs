@@ -1,4 +1,4 @@
-// Rust guideline compliant 2026-02-11
+// Rust guideline compliant 2026-02-14
 //! Tagged enum processing for C# code generation.
 //!
 //! Converts a Rust enum with data variants into the [`DerivedCSharp`]
@@ -9,9 +9,10 @@ use crate::attr::field::FieldAttr;
 use crate::attr::from_pascal_to_snake;
 use crate::attr::to_pascal_case;
 use crate::config::{CSharpConfig, CSharpNamespace};
-use crate::types::named::{analyze_type, type_to_token_expr};
+use crate::types::named::{analyze_type, extract_hashmap_types, type_to_token_expr};
 use crate::types::{
-    CSharpField, DerivedCSharp, DerivedCSharpKind, EnumTagging, TaggedVariant, TaggedVariantData,
+    CSharpField, DerivedCSharp, DerivedCSharpKind, EnumTagging, FlattenKind, TaggedVariant,
+    TaggedVariantData,
 };
 use syn::{DataEnum, DeriveInput, Fields};
 
@@ -55,6 +56,34 @@ fn process_struct_fields(
             continue;
         }
 
+        // Flatten fields: inline struct properties or emit extension data.
+        if field_attr.flatten {
+            if let Some((key_ty, value_ty)) = extract_hashmap_types(&field.ty) {
+                let key_expr = type_to_token_expr(key_ty);
+                let value_expr = type_to_token_expr(value_ty);
+                result.push(CSharpField {
+                    csharp_property_name: String::new(),
+                    json_name: String::new(),
+                    type_expr: proc_macro2::TokenStream::new(),
+                    is_optional: false,
+                    flatten: FlattenKind::HashMap {
+                        key_expr,
+                        value_expr,
+                    },
+                });
+            } else {
+                let ty = &field.ty;
+                result.push(CSharpField {
+                    csharp_property_name: String::new(),
+                    json_name: String::new(),
+                    type_expr: quote::quote! { <#ty as csharp_rs::CSharp>::csharp_fields() },
+                    is_optional: false,
+                    flatten: FlattenKind::Struct,
+                });
+            }
+            continue;
+        }
+
         let field_ident = field
             .ident
             .as_ref()
@@ -83,6 +112,7 @@ fn process_struct_fields(
             json_name,
             type_expr,
             is_optional,
+            flatten: FlattenKind::None,
         });
     }
 
@@ -417,6 +447,42 @@ mod tests {
                 assert_eq!(fields[1].csharp_property_name, "Y");
             }
             _ => panic!("expected Struct data"),
+        }
+    }
+
+    #[test]
+    fn struct_variant_flatten_field() {
+        let input: DeriveInput = parse_quote! {
+            #[serde(tag = "type")]
+            enum Event {
+                Action {
+                    name: String,
+                    #[serde(flatten)]
+                    meta: Metadata,
+                },
+            }
+        };
+        let ir = tagged_enum(
+            &input,
+            match &input.data {
+                syn::Data::Enum(e) => e,
+                _ => panic!("expected enum"),
+            },
+            &ContainerAttr::from_attrs(&input.attrs).unwrap(),
+            &CSharpConfig::default(),
+        )
+        .unwrap();
+
+        match &ir.kind {
+            DerivedCSharpKind::TaggedEnum { variants, .. } => match &variants[0].data {
+                TaggedVariantData::Struct(fields) => {
+                    assert_eq!(fields.len(), 2);
+                    assert!(matches!(fields[0].flatten, FlattenKind::None));
+                    assert!(matches!(fields[1].flatten, FlattenKind::Struct));
+                }
+                _ => panic!("expected Struct variant data"),
+            },
+            _ => panic!("expected TaggedEnum kind"),
         }
     }
 }

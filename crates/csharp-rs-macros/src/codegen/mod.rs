@@ -9,7 +9,7 @@ mod simple_enum;
 mod tagged_enum;
 
 use crate::config::CSharpConfig;
-use crate::types::{CSharpField, DerivedCSharp, DerivedCSharpKind};
+use crate::types::{CSharpField, DerivedCSharp, DerivedCSharpKind, FlattenKind};
 use proc_macro2::TokenStream;
 use quote::quote;
 
@@ -36,7 +36,7 @@ pub(crate) fn nullable_ref_check_exprs(fields: &[CSharpField]) -> Vec<TokenStrea
 
     fields
         .iter()
-        .filter(|f| f.is_optional)
+        .filter(|f| f.is_optional && matches!(f.flatten, FlattenKind::None))
         .map(|f| {
             let type_expr = &f.type_expr;
             quote! {
@@ -57,6 +57,7 @@ impl DerivedCSharp {
 
         let definition_body = self.build_definition(config);
         let dependencies_body = self.build_dependencies();
+        let csharp_fields_body = self.build_csharp_fields();
         let export_test = self.build_export_test(config);
 
         quote! {
@@ -71,6 +72,10 @@ impl DerivedCSharp {
 
                 fn dependencies() -> Vec<String> {
                     #dependencies_body
+                }
+
+                fn csharp_fields() -> Vec<csharp_rs::CSharpFieldInfo> {
+                    #csharp_fields_body
                 }
             }
 
@@ -103,38 +108,133 @@ impl DerivedCSharp {
     }
 
     /// Builds the `dependencies()` body returning type names.
+    ///
+    /// For flatten fields, dependency resolution differs:
+    /// - `FlattenKind::None`: uses `type_expr` (produces the C# type name).
+    /// - `FlattenKind::Struct`: collects transitive deps via the inner type's
+    ///   `csharp_fields()` property type names (the flattened type itself is
+    ///   not a dependency since its properties are inlined).
+    /// - `FlattenKind::HashMap`: no deps (extension data uses framework types).
     fn build_dependencies(&self) -> TokenStream {
         match &self.kind {
-            DerivedCSharpKind::Record(fields) => {
-                let type_exprs: Vec<&TokenStream> = fields.iter().map(|f| &f.type_expr).collect();
-
-                if type_exprs.is_empty() {
-                    quote! { Vec::new() }
-                } else {
-                    quote! {
-                        vec![#(#type_exprs),*]
-                    }
-                }
-            }
+            DerivedCSharpKind::Record(fields) => Self::build_field_dependencies(fields),
             DerivedCSharpKind::Enum(_) => quote! { Vec::new() },
             DerivedCSharpKind::TaggedEnum { variants, .. } => {
-                let type_exprs: Vec<&TokenStream> = variants
+                let all_fields: Vec<&CSharpField> = variants
                     .iter()
                     .flat_map(|v| match &v.data {
-                        crate::types::TaggedVariantData::Unit => Vec::new(),
-                        crate::types::TaggedVariantData::Newtype { type_expr } => vec![type_expr],
-                        crate::types::TaggedVariantData::Struct(fields) => {
-                            fields.iter().map(|f| &f.type_expr).collect()
-                        }
+                        crate::types::TaggedVariantData::Unit
+                        | crate::types::TaggedVariantData::Newtype { .. } => Vec::new(),
+                        crate::types::TaggedVariantData::Struct(fields) => fields.iter().collect(),
                     })
                     .collect();
 
-                if type_exprs.is_empty() {
-                    quote! { Vec::new() }
-                } else {
-                    quote! {
-                        vec![#(#type_exprs),*]
+                // Newtype type_exprs still need to be included as direct deps
+                let newtype_exprs: Vec<&TokenStream> = variants
+                    .iter()
+                    .filter_map(|v| match &v.data {
+                        crate::types::TaggedVariantData::Newtype { type_expr } => Some(type_expr),
+                        _ => None,
+                    })
+                    .collect();
+
+                let regular_exprs: Vec<&TokenStream> = all_fields
+                    .iter()
+                    .filter(|f| matches!(f.flatten, FlattenKind::None))
+                    .map(|f| &f.type_expr)
+                    .collect();
+
+                let flatten_struct_fields: Vec<&&CSharpField> = all_fields
+                    .iter()
+                    .filter(|f| matches!(f.flatten, FlattenKind::Struct))
+                    .collect();
+
+                let all_regular: Vec<&TokenStream> = newtype_exprs
+                    .iter()
+                    .chain(regular_exprs.iter())
+                    .copied()
+                    .collect();
+
+                if flatten_struct_fields.is_empty() {
+                    if all_regular.is_empty() {
+                        quote! { Vec::new() }
+                    } else {
+                        quote! {
+                            vec![#(#all_regular),*]
+                        }
                     }
+                } else {
+                    let flatten_extends: Vec<TokenStream> = flatten_struct_fields
+                        .iter()
+                        .map(|f| {
+                            let type_expr = &f.type_expr;
+                            quote! {
+                                for fi in #type_expr {
+                                    if let csharp_rs::CSharpFieldInfo::Property { type_name, .. } = fi {
+                                        deps.push(type_name);
+                                    }
+                                }
+                            }
+                        })
+                        .collect();
+
+                    quote! {
+                        {
+                            let mut deps: Vec<String> = vec![#(#all_regular),*];
+                            #(#flatten_extends)*
+                            deps
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Builds dependency collection for a slice of fields, handling flatten.
+    ///
+    /// Regular fields contribute their `type_expr` directly. Flatten-struct
+    /// fields contribute transitive deps from the inner type's `csharp_fields()`.
+    /// Flatten-HashMap fields contribute nothing.
+    fn build_field_dependencies(fields: &[CSharpField]) -> TokenStream {
+        let regular_exprs: Vec<&TokenStream> = fields
+            .iter()
+            .filter(|f| matches!(f.flatten, FlattenKind::None))
+            .map(|f| &f.type_expr)
+            .collect();
+
+        let flatten_struct_fields: Vec<&CSharpField> = fields
+            .iter()
+            .filter(|f| matches!(f.flatten, FlattenKind::Struct))
+            .collect();
+
+        if flatten_struct_fields.is_empty() {
+            if regular_exprs.is_empty() {
+                quote! { Vec::new() }
+            } else {
+                quote! {
+                    vec![#(#regular_exprs),*]
+                }
+            }
+        } else {
+            let flatten_extends: Vec<TokenStream> = flatten_struct_fields
+                .iter()
+                .map(|f| {
+                    let type_expr = &f.type_expr;
+                    quote! {
+                        for fi in #type_expr {
+                            if let csharp_rs::CSharpFieldInfo::Property { type_name, .. } = fi {
+                                deps.push(type_name);
+                            }
+                        }
+                    }
+                })
+                .collect();
+
+            quote! {
+                {
+                    let mut deps: Vec<String> = vec![#(#regular_exprs),*];
+                    #(#flatten_extends)*
+                    deps
                 }
             }
         }
@@ -165,6 +265,65 @@ impl DerivedCSharp {
             }
         }
     }
+
+    /// Builds the `csharp_fields()` body returning field metadata for flatten.
+    fn build_csharp_fields(&self) -> TokenStream {
+        let fields: Vec<&CSharpField> = match &self.kind {
+            DerivedCSharpKind::Record(fields) => fields.iter().collect(),
+            DerivedCSharpKind::Enum(_) | DerivedCSharpKind::TaggedEnum { .. } => {
+                return quote! { Vec::new() };
+            }
+        };
+
+        if fields.is_empty() {
+            return quote! { Vec::new() };
+        }
+
+        let field_exprs: Vec<TokenStream> = fields
+            .iter()
+            .map(|f| match &f.flatten {
+                FlattenKind::None => {
+                    let prop_name = &f.csharp_property_name;
+                    let json_name = &f.json_name;
+                    let is_optional = f.is_optional;
+                    let type_expr = &f.type_expr;
+                    quote! {
+                        result.push(csharp_rs::CSharpFieldInfo::Property {
+                            property_name: String::from(#prop_name),
+                            json_name: String::from(#json_name),
+                            type_name: #type_expr,
+                            is_optional: #is_optional,
+                        });
+                    }
+                }
+                FlattenKind::Struct => {
+                    let type_expr = &f.type_expr;
+                    quote! {
+                        result.extend(#type_expr);
+                    }
+                }
+                FlattenKind::HashMap {
+                    key_expr,
+                    value_expr,
+                } => {
+                    quote! {
+                        result.push(csharp_rs::CSharpFieldInfo::ExtensionData {
+                            key_type_name: #key_expr,
+                            value_type_name: #value_expr,
+                        });
+                    }
+                }
+            })
+            .collect();
+
+        quote! {
+            {
+                let mut result: Vec<csharp_rs::CSharpFieldInfo> = Vec::new();
+                #(#field_exprs)*
+                result
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -185,6 +344,7 @@ mod tests {
                 json_name: String::from("name"),
                 type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
                 is_optional: false,
+                flatten: FlattenKind::None,
             }]),
             export,
             export_to,
@@ -321,6 +481,7 @@ mod tests {
                 json_name: String::from("score"),
                 type_expr: quote! { <f64 as csharp_rs::CSharp>::csharp_name() },
                 is_optional: true,
+                flatten: FlattenKind::None,
             }]),
             export: false,
             export_to: None,
@@ -418,6 +579,7 @@ mod tests {
                             json_name: String::from("id"),
                             type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
                             is_optional: false,
+                            flatten: FlattenKind::None,
                         }]),
                     },
                     TaggedVariant {
@@ -982,6 +1144,7 @@ mod tests {
                             json_name: String::from("id"),
                             type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
                             is_optional: false,
+                            flatten: FlattenKind::None,
                         }]),
                     },
                     TaggedVariant {
@@ -1169,6 +1332,7 @@ mod tests {
                             json_name: String::from("id"),
                             type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
                             is_optional: false,
+                            flatten: FlattenKind::None,
                         }]),
                     },
                     TaggedVariant {
@@ -1383,6 +1547,7 @@ mod tests {
                             json_name: String::from("id"),
                             type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
                             is_optional: false,
+                            flatten: FlattenKind::None,
                         }]),
                     },
                     TaggedVariant {
@@ -1608,6 +1773,7 @@ mod tests {
                 json_name: String::from("score"),
                 type_expr: quote! { <f64 as csharp_rs::CSharp>::csharp_name() },
                 is_optional: true,
+                flatten: FlattenKind::None,
             }]),
             export: false,
             export_to: None,
@@ -1678,6 +1844,7 @@ mod tests {
                 json_name: String::from("name"),
                 type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
                 is_optional: true,
+                flatten: FlattenKind::None,
             }]),
             export: false,
             export_to: None,
@@ -1727,6 +1894,7 @@ mod tests {
                         json_name: String::from("payload"),
                         type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
                         is_optional: true,
+                        flatten: FlattenKind::None,
                     }]),
                 }],
             },
@@ -1738,6 +1906,372 @@ mod tests {
         assert!(
             tokens.contains("nullable"),
             "tagged enum with optional ref field should contain nullable check:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn record_generates_csharp_fields_method() {
+        let config = stj_config();
+        let ir = sample_ir(false, None);
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        assert!(
+            tokens.contains("csharp_fields"),
+            "generated impl should contain csharp_fields method:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn record_with_flatten_struct_field_has_csharp_fields_call() {
+        let config = stj_config();
+        let ir = DerivedCSharp {
+            rust_ident: quote::format_ident!("Outer"),
+            csharp_name: String::from("Outer"),
+            namespace: CSharpNamespace::new("Ns").unwrap(),
+            kind: DerivedCSharpKind::Record(vec![
+                CSharpField {
+                    csharp_property_name: String::from("Name"),
+                    json_name: String::from("name"),
+                    type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                    is_optional: false,
+                    flatten: FlattenKind::None,
+                },
+                CSharpField {
+                    csharp_property_name: String::new(),
+                    json_name: String::new(),
+                    type_expr: quote! { <Inner as csharp_rs::CSharp>::csharp_fields() },
+                    is_optional: false,
+                    flatten: FlattenKind::Struct,
+                },
+            ]),
+            export: false,
+            export_to: None,
+        };
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        assert!(
+            tokens.contains("CSharpFieldInfo"),
+            "flatten struct field should reference CSharpFieldInfo in codegen:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn record_with_flatten_hashmap_has_extension_data() {
+        let config = stj_config();
+        let ir = DerivedCSharp {
+            rust_ident: quote::format_ident!("WithExtra"),
+            csharp_name: String::from("WithExtra"),
+            namespace: CSharpNamespace::new("Ns").unwrap(),
+            kind: DerivedCSharpKind::Record(vec![CSharpField {
+                csharp_property_name: String::new(),
+                json_name: String::new(),
+                type_expr: TokenStream::new(),
+                is_optional: false,
+                flatten: FlattenKind::HashMap {
+                    key_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                    value_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                },
+            }]),
+            export: false,
+            export_to: None,
+        };
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        assert!(
+            tokens.contains("JsonExtensionData"),
+            "flatten HashMap field should generate JsonExtensionData:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn flatten_struct_dependencies_uses_transitive() {
+        let config = stj_config();
+        let ir = DerivedCSharp {
+            rust_ident: quote::format_ident!("Outer"),
+            csharp_name: String::from("Outer"),
+            namespace: CSharpNamespace::new("Ns").unwrap(),
+            kind: DerivedCSharpKind::Record(vec![
+                CSharpField {
+                    csharp_property_name: String::from("Name"),
+                    json_name: String::from("name"),
+                    type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                    is_optional: false,
+                    flatten: FlattenKind::None,
+                },
+                CSharpField {
+                    csharp_property_name: String::new(),
+                    json_name: String::new(),
+                    type_expr: quote! { <Inner as csharp_rs::CSharp>::csharp_fields() },
+                    is_optional: false,
+                    flatten: FlattenKind::Struct,
+                },
+            ]),
+            export: false,
+            export_to: None,
+        };
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        // Dependencies should NOT include the csharp_fields() call directly
+        // Instead it should use Inner::dependencies() for transitive deps
+        assert!(
+            !tokens.contains("fn dependencies () -> Vec < String > { vec ! [< String as csharp_rs :: CSharp > :: csharp_name () , < Inner as csharp_rs :: CSharp > :: csharp_fields ()"),
+            "flatten struct should NOT use csharp_fields() as a dependency:\n{tokens}"
+        );
+        // Should contain extend call for transitive deps from Inner
+        assert!(
+            tokens.contains("Inner"),
+            "dependencies should reference Inner type for transitive deps:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn tagged_enum_struct_variant_with_flatten_struct_has_field_info() {
+        let config = stj_config();
+        let ir = DerivedCSharp {
+            rust_ident: quote::format_ident!("Event"),
+            csharp_name: String::from("Event"),
+            namespace: CSharpNamespace::new("Ns").unwrap(),
+            kind: DerivedCSharpKind::TaggedEnum {
+                tagging: EnumTagging::Internal {
+                    tag: String::from("type"),
+                },
+                variants: vec![TaggedVariant {
+                    csharp_name: String::from("Data"),
+                    json_name: String::from("Data"),
+                    data: TaggedVariantData::Struct(vec![
+                        CSharpField {
+                            csharp_property_name: String::from("Name"),
+                            json_name: String::from("name"),
+                            type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                            is_optional: false,
+                            flatten: FlattenKind::None,
+                        },
+                        CSharpField {
+                            csharp_property_name: String::new(),
+                            json_name: String::new(),
+                            type_expr: quote! { <Inner as csharp_rs::CSharp>::csharp_fields() },
+                            is_optional: false,
+                            flatten: FlattenKind::Struct,
+                        },
+                    ]),
+                }],
+            },
+            export: false,
+            export_to: None,
+        };
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        // The variant body in build_struct_variant should iterate
+        // csharp_fields() at runtime for flatten-struct fields.
+        // Look for `for field_info in` in the field_parts block (not just in
+        // the csharp_fields() impl method).
+        let variant_section = tokens
+            .split("variant_parts")
+            .nth(1)
+            .expect("should have variant_parts section");
+        assert!(
+            variant_section.contains("for field_info in"),
+            "tagged enum struct variant with flatten field should iterate csharp_fields() in property rendering:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn tagged_enum_struct_variant_with_flatten_hashmap_has_extension_data() {
+        let config = stj_config();
+        let ir = DerivedCSharp {
+            rust_ident: quote::format_ident!("Event"),
+            csharp_name: String::from("Event"),
+            namespace: CSharpNamespace::new("Ns").unwrap(),
+            kind: DerivedCSharpKind::TaggedEnum {
+                tagging: EnumTagging::Internal {
+                    tag: String::from("type"),
+                },
+                variants: vec![TaggedVariant {
+                    csharp_name: String::from("Data"),
+                    json_name: String::from("Data"),
+                    data: TaggedVariantData::Struct(vec![
+                        CSharpField {
+                            csharp_property_name: String::from("Version"),
+                            json_name: String::from("version"),
+                            type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                            is_optional: false,
+                            flatten: FlattenKind::None,
+                        },
+                        CSharpField {
+                            csharp_property_name: String::new(),
+                            json_name: String::new(),
+                            type_expr: TokenStream::new(),
+                            is_optional: false,
+                            flatten: FlattenKind::HashMap {
+                                key_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                                value_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                            },
+                        },
+                    ]),
+                }],
+            },
+            export: false,
+            export_to: None,
+        };
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        assert!(
+            tokens.contains("JsonExtensionData"),
+            "tagged enum struct variant with flatten HashMap should generate JsonExtensionData:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn tagged_enum_with_hashmap_flatten_has_nullable_directive() {
+        let config = stj_config();
+        let ir = DerivedCSharp {
+            rust_ident: quote::format_ident!("Event"),
+            csharp_name: String::from("Event"),
+            namespace: CSharpNamespace::new("Ns").unwrap(),
+            kind: DerivedCSharpKind::TaggedEnum {
+                tagging: EnumTagging::Internal {
+                    tag: String::from("type"),
+                },
+                variants: vec![TaggedVariant {
+                    csharp_name: String::from("Data"),
+                    json_name: String::from("Data"),
+                    data: TaggedVariantData::Struct(vec![
+                        CSharpField {
+                            csharp_property_name: String::from("Name"),
+                            json_name: String::from("name"),
+                            type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                            is_optional: false,
+                            flatten: FlattenKind::None,
+                        },
+                        CSharpField {
+                            csharp_property_name: String::new(),
+                            json_name: String::new(),
+                            type_expr: TokenStream::new(),
+                            is_optional: false,
+                            flatten: FlattenKind::HashMap {
+                                key_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                                value_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                            },
+                        },
+                    ]),
+                }],
+            },
+            export: false,
+            export_to: None,
+        };
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        // After the fix, `has_hashmap_flatten = true` is interpolated into the
+        // nullable-directive condition so the runtime `if` always evaluates to
+        // true.  Verify that `true` appears in the collapsed condition.
+        let collapsed: String = tokens.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(
+            collapsed.contains("letnullable_directive=iftrue"),
+            "tagged enum with HashMap flatten should force nullable directive via `if true`:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn tagged_internal_stj_csharp11_with_hashmap_flatten_has_system_text_json_using() {
+        let config = CSharpConfig {
+            serializer: Serializer::SystemTextJson,
+            target: CSharpVersion::CSharp11,
+            ..CSharpConfig::default()
+        };
+        let ir = DerivedCSharp {
+            rust_ident: quote::format_ident!("Event"),
+            csharp_name: String::from("Event"),
+            namespace: CSharpNamespace::new("Ns").unwrap(),
+            kind: DerivedCSharpKind::TaggedEnum {
+                tagging: EnumTagging::Internal {
+                    tag: String::from("type"),
+                },
+                variants: vec![TaggedVariant {
+                    csharp_name: String::from("Data"),
+                    json_name: String::from("Data"),
+                    data: TaggedVariantData::Struct(vec![CSharpField {
+                        csharp_property_name: String::new(),
+                        json_name: String::new(),
+                        type_expr: TokenStream::new(),
+                        is_optional: false,
+                        flatten: FlattenKind::HashMap {
+                            key_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                            value_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                        },
+                    }]),
+                }],
+            },
+            export: false,
+            export_to: None,
+        };
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        // Native polymorphism path uses only System.Text.Json.Serialization,
+        // but HashMap flatten needs System.Text.Json for JsonElement.
+        assert!(
+            tokens.contains("System.Text.Json;"),
+            "native polymorphism with HashMap flatten should include System.Text.Json using:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn nullable_ref_check_skips_flatten_fields() {
+        // If a flatten field somehow had is_optional: true,
+        // nullable_ref_check_exprs should skip it.
+        let fields = vec![CSharpField {
+            csharp_property_name: String::new(),
+            json_name: String::new(),
+            type_expr: TokenStream::new(),
+            is_optional: true, // hypothetically optional flatten field
+            flatten: FlattenKind::Struct,
+        }];
+        let result = super::nullable_ref_check_exprs(&fields);
+        assert!(
+            result.is_empty(),
+            "flatten fields should be skipped by nullable_ref_check_exprs"
+        );
+    }
+
+    #[test]
+    fn flatten_hashmap_dependencies_excluded() {
+        let config = stj_config();
+        let ir = DerivedCSharp {
+            rust_ident: quote::format_ident!("WithExtra"),
+            csharp_name: String::from("WithExtra"),
+            namespace: CSharpNamespace::new("Ns").unwrap(),
+            kind: DerivedCSharpKind::Record(vec![
+                CSharpField {
+                    csharp_property_name: String::from("Name"),
+                    json_name: String::from("name"),
+                    type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                    is_optional: false,
+                    flatten: FlattenKind::None,
+                },
+                CSharpField {
+                    csharp_property_name: String::new(),
+                    json_name: String::new(),
+                    type_expr: TokenStream::new(),
+                    is_optional: false,
+                    flatten: FlattenKind::HashMap {
+                        key_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                        value_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                    },
+                },
+            ]),
+            export: false,
+            export_to: None,
+        };
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        // The dependencies vec should only contain the regular field's type_expr
+        // HashMap flatten should not add any dependency entries
+        let deps_section = tokens
+            .split("fn dependencies")
+            .nth(1)
+            .expect("should have dependencies fn");
+        assert!(
+            !deps_section.contains("JsonElement"),
+            "HashMap flatten should not contribute to dependencies:\n{tokens}"
         );
     }
 }

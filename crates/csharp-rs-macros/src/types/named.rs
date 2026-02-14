@@ -1,4 +1,4 @@
-// Rust guideline compliant 2026-02-10
+// Rust guideline compliant 2026-02-14
 //! Named struct processing for C# code generation.
 //!
 //! Converts a Rust struct with named fields into the [`DerivedCSharp`]
@@ -9,7 +9,7 @@ use crate::attr::container::ContainerAttr;
 use crate::attr::field::FieldAttr;
 use crate::attr::to_pascal_case;
 use crate::config::{CSharpConfig, CSharpNamespace};
-use crate::types::{CSharpField, DerivedCSharp, DerivedCSharpKind};
+use crate::types::{CSharpField, DerivedCSharp, DerivedCSharpKind, FlattenKind};
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{DeriveInput, FieldsNamed, GenericArgument, PathArguments, Type, TypePath};
@@ -47,6 +47,34 @@ pub fn named_struct(
             continue;
         }
 
+        // Flatten fields: inline struct properties or emit extension data.
+        if field_attr.flatten {
+            if let Some((key_ty, value_ty)) = extract_hashmap_types(&field.ty) {
+                let key_expr = type_to_token_expr(key_ty);
+                let value_expr = type_to_token_expr(value_ty);
+                fields.push(CSharpField {
+                    csharp_property_name: String::new(),
+                    json_name: String::new(),
+                    type_expr: TokenStream::new(),
+                    is_optional: false,
+                    flatten: FlattenKind::HashMap {
+                        key_expr,
+                        value_expr,
+                    },
+                });
+            } else {
+                let ty = &field.ty;
+                fields.push(CSharpField {
+                    csharp_property_name: String::new(),
+                    json_name: String::new(),
+                    type_expr: quote! { <#ty as csharp_rs::CSharp>::csharp_fields() },
+                    is_optional: false,
+                    flatten: FlattenKind::Struct,
+                });
+            }
+            continue;
+        }
+
         let field_ident = field
             .ident
             .as_ref()
@@ -75,6 +103,7 @@ pub fn named_struct(
             json_name,
             type_expr,
             is_optional,
+            flatten: FlattenKind::None,
         });
     }
 
@@ -131,6 +160,34 @@ pub(crate) fn extract_option_inner(ty: &Type) -> Option<&Type> {
 
     match &args.args[0] {
         GenericArgument::Type(inner) => Some(inner),
+        _ => None,
+    }
+}
+
+/// Extracts the key and value types from `HashMap<K, V>`, if the type is `HashMap`.
+///
+/// Only matches the bare identifier `HashMap`; fully-qualified paths are not
+/// recognized. Returns `None` for non-HashMap types.
+pub(crate) fn extract_hashmap_types(ty: &Type) -> Option<(&Type, &Type)> {
+    let Type::Path(TypePath { path, .. }) = ty else {
+        return None;
+    };
+
+    let segment = path.segments.last()?;
+    if segment.ident != "HashMap" {
+        return None;
+    }
+
+    let PathArguments::AngleBracketed(ref args) = segment.arguments else {
+        return None;
+    };
+
+    if args.args.len() != 2 {
+        return None;
+    }
+
+    match (&args.args[0], &args.args[1]) {
+        (GenericArgument::Type(key), GenericArgument::Type(value)) => Some((key, value)),
         _ => None,
     }
 }
@@ -320,5 +377,72 @@ mod tests {
         assert_eq!(fields.len(), 2);
         assert!(!fields[0].is_optional, "name should not be optional");
         assert!(fields[1].is_optional, "tag should be forced optional");
+    }
+
+    #[test]
+    fn extract_hashmap_returns_key_value_types() {
+        let ty: Type = parse_quote!(HashMap<String, i32>);
+        let result = extract_hashmap_types(&ty);
+        assert!(result.is_some(), "should extract HashMap key/value types");
+    }
+
+    #[test]
+    fn extract_hashmap_returns_none_for_non_hashmap() {
+        let ty: Type = parse_quote!(Vec<i32>);
+        assert!(extract_hashmap_types(&ty).is_none());
+    }
+
+    #[test]
+    fn flatten_struct_field_creates_flatten_kind() {
+        let input: DeriveInput = parse_quote! {
+            struct Outer {
+                name: String,
+                #[serde(flatten)]
+                inner: Inner,
+            }
+        };
+        let ir = process_named(&input);
+        let fields = extract_fields(&ir);
+        assert_eq!(fields.len(), 2);
+        assert!(
+            matches!(fields[0].flatten, FlattenKind::None),
+            "regular field should be FlattenKind::None"
+        );
+        assert!(
+            matches!(fields[1].flatten, FlattenKind::Struct),
+            "flatten field should be FlattenKind::Struct"
+        );
+    }
+
+    #[test]
+    fn flatten_hashmap_field_creates_hashmap_kind() {
+        let input: DeriveInput = parse_quote! {
+            struct WithExtra {
+                name: String,
+                #[serde(flatten)]
+                extra: HashMap<String, Value>,
+            }
+        };
+        let ir = process_named(&input);
+        let fields = extract_fields(&ir);
+        assert_eq!(fields.len(), 2);
+        assert!(
+            matches!(fields[1].flatten, FlattenKind::HashMap { .. }),
+            "flatten HashMap field should be FlattenKind::HashMap"
+        );
+    }
+
+    #[test]
+    fn flatten_and_skip_excludes_field() {
+        let input: DeriveInput = parse_quote! {
+            struct Foo {
+                name: String,
+                #[serde(flatten, skip)]
+                hidden: Inner,
+            }
+        };
+        let ir = process_named(&input);
+        let fields = extract_fields(&ir);
+        assert_eq!(fields.len(), 1, "skip should take priority over flatten");
     }
 }

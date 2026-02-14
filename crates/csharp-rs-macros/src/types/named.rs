@@ -92,7 +92,7 @@ pub fn named_struct(
 ///
 /// Returns `(is_optional, type_expr)` where `type_expr` is a `TokenStream`
 /// that calls `<T as CSharp>::csharp_name()` at compile time.
-fn analyze_type(ty: &Type) -> (bool, TokenStream) {
+pub(crate) fn analyze_type(ty: &Type) -> (bool, TokenStream) {
     if let Some(inner) = extract_option_inner(ty) {
         let expr = type_to_token_expr(inner);
         (true, expr)
@@ -103,7 +103,7 @@ fn analyze_type(ty: &Type) -> (bool, TokenStream) {
 }
 
 /// Generates a token expression that resolves to the C# type name.
-fn type_to_token_expr(ty: &Type) -> TokenStream {
+pub(crate) fn type_to_token_expr(ty: &Type) -> TokenStream {
     quote! { <#ty as csharp_rs::CSharp>::csharp_name() }
 }
 
@@ -111,7 +111,7 @@ fn type_to_token_expr(ty: &Type) -> TokenStream {
 ///
 /// Only matches the bare identifier `Option`; fully-qualified paths like
 /// `std::option::Option<T>` are not recognized. This matches serde's behavior.
-fn extract_option_inner(ty: &Type) -> Option<&Type> {
+pub(crate) fn extract_option_inner(ty: &Type) -> Option<&Type> {
     let Type::Path(TypePath { path, .. }) = ty else {
         return None;
     };
@@ -159,7 +159,7 @@ mod tests {
     fn extract_fields(ir: &DerivedCSharp) -> &[CSharpField] {
         match &ir.kind {
             DerivedCSharpKind::Record(fields) => fields,
-            DerivedCSharpKind::Enum(_) => panic!("expected Record kind"),
+            _ => panic!("expected Record kind"),
         }
     }
 

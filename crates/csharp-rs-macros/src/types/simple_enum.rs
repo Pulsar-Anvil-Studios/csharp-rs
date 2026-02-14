@@ -98,7 +98,7 @@ mod tests {
     fn extract_variants(ir: &DerivedCSharp) -> &[CSharpVariant] {
         match &ir.kind {
             DerivedCSharpKind::Enum(variants) => variants,
-            DerivedCSharpKind::Record(_) => panic!("expected Enum kind"),
+            _ => panic!("expected Enum kind"),
         }
     }
 

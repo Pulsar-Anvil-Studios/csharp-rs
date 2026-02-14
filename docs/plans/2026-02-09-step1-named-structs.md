@@ -198,4 +198,4 @@ Test fonctionnel : créer un struct de test, appeler `T::csharp_definition()`, v
 - **Step 5** : `flatten` / `untagged`
 - **Step 6** : Config runtime (struct `Config` en paramètre du trait, comme ts-rs v12)
 - **Step 7** : C# version targeting avancé (file-scoped namespaces C# 10, `required` C# 11)
-- **Step 8** : Snapshot tests + compilation C# en CI
+- **Step 8** : Snapshot tests + compilation C# en local et en CI

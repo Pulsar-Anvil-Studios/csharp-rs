@@ -1,4 +1,4 @@
-// Rust guideline compliant 2026-02-11
+// Rust guideline compliant 2026-02-14
 //! Tagged enum code generation (internally, adjacently, externally tagged, and
 //! untagged).
 //!
@@ -14,6 +14,105 @@ use crate::config::{CSharpConfig, CSharpVersion, Serializer};
 use crate::types::{CSharpField, EnumTagging, TaggedVariant, TaggedVariantData};
 use proc_macro2::TokenStream;
 use quote::quote;
+
+/// C# reserved keywords that cannot be used as identifiers without escaping.
+///
+/// Pattern variables in `case` arms use the lowercased variant name, which can
+/// collide with C# keywords (e.g. variant `Float` → `float`). Prefixing with
+/// `@` produces a valid verbatim identifier (`@float`).
+const CSHARP_KEYWORDS: &[&str] = &[
+    "abstract",
+    "as",
+    "base",
+    "bool",
+    "break",
+    "byte",
+    "case",
+    "catch",
+    "char",
+    "checked",
+    "class",
+    "const",
+    "continue",
+    "decimal",
+    "default",
+    "delegate",
+    "do",
+    "double",
+    "else",
+    "enum",
+    "event",
+    "explicit",
+    "extern",
+    "false",
+    "finally",
+    "fixed",
+    "float",
+    "for",
+    "foreach",
+    "goto",
+    "if",
+    "implicit",
+    "in",
+    "int",
+    "interface",
+    "internal",
+    "is",
+    "lock",
+    "long",
+    "namespace",
+    "new",
+    "null",
+    "object",
+    "operator",
+    "out",
+    "override",
+    "params",
+    "private",
+    "protected",
+    "public",
+    "readonly",
+    "ref",
+    "return",
+    "sbyte",
+    "sealed",
+    "short",
+    "sizeof",
+    "stackalloc",
+    "static",
+    "string",
+    "struct",
+    "switch",
+    "this",
+    "throw",
+    "true",
+    "try",
+    "typeof",
+    "uint",
+    "ulong",
+    "unchecked",
+    "unsafe",
+    "ushort",
+    "using",
+    "virtual",
+    "void",
+    "volatile",
+    "while",
+];
+
+/// Returns a C# safe identifier for use as a pattern variable name.
+///
+/// Lowercases the input and prefixes it with `@` if it collides with a C#
+/// reserved keyword. For example, `"Float"` becomes `"@float"` and
+/// `"Request"` becomes `"request"`.
+fn csharp_safe_var_name(name: &str) -> String {
+    let lower = name.to_lowercase();
+    if CSHARP_KEYWORDS.contains(&lower.as_str()) {
+        format!("@{lower}")
+    } else {
+        lower
+    }
+}
 
 /// Builds a tagged enum definition token stream.
 ///
@@ -52,6 +151,15 @@ pub fn build_tagged_enum_definition(
     let converter_expr =
         build_converter_block(csharp_name, tagging, variants, config, use_file_scoped_ns);
 
+    // Collect nullable-reference-type checks from all struct variant fields.
+    let nullable_checks: Vec<TokenStream> = variants
+        .iter()
+        .flat_map(|v| match &v.data {
+            TaggedVariantData::Struct(fields) => super::nullable_ref_check_exprs(fields),
+            _ => Vec::new(),
+        })
+        .collect();
+
     let indent = if use_file_scoped_ns { "" } else { "    " };
 
     // Build the format template depending on namespace style.
@@ -64,6 +172,7 @@ pub fn build_tagged_enum_definition(
             indent,
             &variant_exprs,
             converter_expr.as_ref(),
+            &nullable_checks,
         )
     } else {
         build_block_scoped(
@@ -74,6 +183,7 @@ pub fn build_tagged_enum_definition(
             indent,
             &variant_exprs,
             converter_expr.as_ref(),
+            &nullable_checks,
         )
     }
 }
@@ -649,7 +759,7 @@ fn build_stj_write_arm(
 ) -> TokenStream {
     let json_name = &variant.json_name;
     let csharp_name = &variant.csharp_name;
-    let var_name = variant.csharp_name.to_lowercase();
+    let var_name = csharp_safe_var_name(&variant.csharp_name);
 
     match &variant.data {
         TaggedVariantData::Unit => {
@@ -825,7 +935,7 @@ fn build_newtonsoft_write_arm(
 ) -> TokenStream {
     let json_name = &variant.json_name;
     let csharp_name = &variant.csharp_name;
-    let var_name = variant.csharp_name.to_lowercase();
+    let var_name = csharp_safe_var_name(&variant.csharp_name);
 
     match &variant.data {
         TaggedVariantData::Unit => {
@@ -1119,7 +1229,7 @@ fn build_external_stj_write_arm(
 ) -> TokenStream {
     let json_name = &variant.json_name;
     let csharp_name = &variant.csharp_name;
-    let var_name = variant.csharp_name.to_lowercase();
+    let var_name = csharp_safe_var_name(&variant.csharp_name);
 
     match &variant.data {
         TaggedVariantData::Unit => {
@@ -1406,7 +1516,7 @@ fn build_external_newtonsoft_write_arm(
 ) -> TokenStream {
     let json_name = &variant.json_name;
     let csharp_name = &variant.csharp_name;
-    let var_name = variant.csharp_name.to_lowercase();
+    let var_name = csharp_safe_var_name(&variant.csharp_name);
 
     match &variant.data {
         TaggedVariantData::Unit => {
@@ -1637,13 +1747,16 @@ fn build_adjacent_stj_read_struct_arm(
             let field_json = &f.json_name;
             let type_expr = &f.type_expr;
 
+            // Inline the content element access to avoid a local variable,
+            // which would require a block body invalid in switch expressions.
             quote! {
                 {
                     let csharp_type = #type_expr;
                     format!(
-                        "{prop}{name} = contentElement.GetProperty(\"{json}\").Deserialize<{ty}>(options),",
+                        "{prop}{name} = root.GetProperty(\"{content}\").GetProperty(\"{json}\").Deserialize<{ty}>(options),",
                         prop = #prop_indent,
                         name = #prop_name,
+                        content = #content,
                         json = #field_json,
                         ty = csharp_type,
                     )
@@ -1657,19 +1770,13 @@ fn build_adjacent_stj_read_struct_arm(
             let field_lines: Vec<String> = vec![#(#field_exprs),*];
             let fields_str = field_lines.join("\n");
             format!(
-                "{arm}\"{json}\" =>\n\
+                "{arm}\"{json}\" => new {name}\n\
                  {arm}{{\n\
-                 {prop}var contentElement = root.GetProperty(\"{content}\");\n\
-                 {prop}return new {name}\n\
-                 {prop}{{\n\
                  {fields}\n\
-                 {prop}}};\n\
                  {arm}}},",
                 arm = #arm_indent,
                 json = #json_name,
                 name = #csharp_name,
-                prop = #prop_indent,
-                content = #content,
                 fields = fields_str,
             )
         }
@@ -1690,7 +1797,7 @@ fn build_adjacent_stj_write_arm(
 ) -> TokenStream {
     let json_name = &variant.json_name;
     let csharp_name = &variant.csharp_name;
-    let var_name = variant.csharp_name.to_lowercase();
+    let var_name = csharp_safe_var_name(&variant.csharp_name);
 
     match &variant.data {
         TaggedVariantData::Unit => {
@@ -1939,13 +2046,16 @@ fn build_adjacent_newtonsoft_read_struct_arm(
             let field_json = &f.json_name;
             let type_expr = &f.type_expr;
 
+            // Inline the content access to avoid a local variable,
+            // which would require a block body invalid in switch expressions.
             quote! {
                 {
                     let csharp_type = #type_expr;
                     format!(
-                        "{prop}{name} = contentObj[\"{json}\"].ToObject<{ty}>(serializer),",
+                        "{prop}{name} = obj[\"{content}\"][\"{json}\"].ToObject<{ty}>(serializer),",
                         prop = #prop_indent,
                         name = #prop_name,
+                        content = #content,
                         json = #field_json,
                         ty = csharp_type,
                     )
@@ -1959,19 +2069,13 @@ fn build_adjacent_newtonsoft_read_struct_arm(
             let field_lines: Vec<String> = vec![#(#field_exprs),*];
             let fields_str = field_lines.join("\n");
             format!(
-                "{arm}\"{json}\" =>\n\
+                "{arm}\"{json}\" => new {name}\n\
                  {arm}{{\n\
-                 {prop}var contentObj = obj[\"{content}\"];\n\
-                 {prop}return new {name}\n\
-                 {prop}{{\n\
                  {fields}\n\
-                 {prop}}};\n\
                  {arm}}},",
                 arm = #arm_indent,
                 json = #json_name,
                 name = #csharp_name,
-                prop = #prop_indent,
-                content = #content,
                 fields = fields_str,
             )
         }
@@ -1993,7 +2097,7 @@ fn build_adjacent_newtonsoft_write_arm(
 ) -> TokenStream {
     let json_name = &variant.json_name;
     let csharp_name = &variant.csharp_name;
-    let var_name = variant.csharp_name.to_lowercase();
+    let var_name = csharp_safe_var_name(&variant.csharp_name);
 
     match &variant.data {
         TaggedVariantData::Unit => {
@@ -2282,7 +2386,7 @@ fn build_untagged_stj_write_arm(
     body_indent: &str,
 ) -> TokenStream {
     let csharp_name = &variant.csharp_name;
-    let var_name = variant.csharp_name.to_lowercase();
+    let var_name = csharp_safe_var_name(&variant.csharp_name);
 
     match &variant.data {
         TaggedVariantData::Unit => {
@@ -2549,7 +2653,7 @@ fn build_untagged_newtonsoft_write_arm(
     body_indent: &str,
 ) -> TokenStream {
     let csharp_name = &variant.csharp_name;
-    let var_name = variant.csharp_name.to_lowercase();
+    let var_name = csharp_safe_var_name(&variant.csharp_name);
 
     match &variant.data {
         TaggedVariantData::Unit => {
@@ -2623,6 +2727,10 @@ fn build_untagged_newtonsoft_write_struct_arm(
 }
 
 /// Builds the final token stream for file-scoped namespace output (C# 10+).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "format template builder with orthogonal layout concerns"
+)]
 fn build_file_scoped(
     using_block: &str,
     namespace: &str,
@@ -2631,6 +2739,7 @@ fn build_file_scoped(
     indent: &str,
     variant_exprs: &[TokenStream],
     converter_expr: Option<&TokenStream>,
+    nullable_checks: &[TokenStream],
 ) -> TokenStream {
     let converter_append = build_converter_append(converter_expr);
 
@@ -2650,14 +2759,23 @@ fn build_file_scoped(
                 )
             };
 
+            let nullable_checks: Vec<bool> = vec![#(#nullable_checks),*];
+            let nullable_directive = if nullable_checks.iter().any(|&x| x) {
+                "#nullable enable\n"
+            } else {
+                ""
+            };
+
             format!(
                 "// <auto-generated/>\n\
+                 {nullable}\
                  {using}\n\
                  \n\
                  namespace {ns};\n\
                  \n\
                  {attrs}\n\
                  {indent}public abstract record {name}{body}\n",
+                nullable = nullable_directive,
                 using = #using_block,
                 ns = #namespace,
                 attrs = #class_attrs,
@@ -2670,6 +2788,10 @@ fn build_file_scoped(
 }
 
 /// Builds the final token stream for block-scoped namespace output (C# 9).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "format template builder with orthogonal layout concerns"
+)]
 fn build_block_scoped(
     using_block: &str,
     namespace: &str,
@@ -2678,6 +2800,7 @@ fn build_block_scoped(
     indent: &str,
     variant_exprs: &[TokenStream],
     converter_expr: Option<&TokenStream>,
+    nullable_checks: &[TokenStream],
 ) -> TokenStream {
     let converter_append = build_converter_append(converter_expr);
 
@@ -2697,8 +2820,16 @@ fn build_block_scoped(
                 )
             };
 
+            let nullable_checks: Vec<bool> = vec![#(#nullable_checks),*];
+            let nullable_directive = if nullable_checks.iter().any(|&x| x) {
+                "#nullable enable\n"
+            } else {
+                ""
+            };
+
             format!(
                 "// <auto-generated/>\n\
+                 {nullable}\
                  {using}\n\
                  \n\
                  namespace {ns}\n\
@@ -2706,6 +2837,7 @@ fn build_block_scoped(
                  {indent}{attrs}\n\
                  {indent}public abstract record {name}{body}\n\
                  }}\n",
+                nullable = nullable_directive,
                 using = #using_block,
                 ns = #namespace,
                 indent = #indent,

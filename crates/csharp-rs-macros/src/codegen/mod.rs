@@ -1,4 +1,4 @@
-// Rust guideline compliant 2026-02-11
+// Rust guideline compliant 2026-02-14
 //! Token stream generation from the [`DerivedCSharp`] intermediate representation.
 //!
 //! Produces the `impl CSharp for T` block, including `csharp_name()`,
@@ -9,9 +9,45 @@ mod simple_enum;
 mod tagged_enum;
 
 use crate::config::CSharpConfig;
-use crate::types::{DerivedCSharp, DerivedCSharpKind};
+use crate::types::{CSharpField, DerivedCSharp, DerivedCSharpKind};
 use proc_macro2::TokenStream;
 use quote::quote;
+
+/// C# built-in value type keywords.
+///
+/// When an optional field resolves to one of these types, the `?` suffix
+/// produces `Nullable<T>` and does **not** require `#nullable enable`.
+/// Any other type (e.g. `string`, `List<int>`, user-defined records) is a
+/// reference type whose `?` annotation only works under `#nullable enable`.
+const CSHARP_VALUE_TYPES: &[&str] = &[
+    "bool", "byte", "sbyte", "short", "ushort", "int", "uint", "long", "ulong", "float", "double",
+    "decimal", "char",
+];
+
+/// Builds nullable-reference-type check expressions for a set of fields.
+///
+/// Returns one `TokenStream` per optional field. Each expression evaluates at
+/// compile time (in the consumer crate) to `true` when the resolved C# type
+/// is a reference type — meaning the file needs `#nullable enable`.
+///
+/// Non-optional fields are skipped because they never emit a `?` suffix.
+pub(crate) fn nullable_ref_check_exprs(fields: &[CSharpField]) -> Vec<TokenStream> {
+    let value_types: Vec<&str> = CSHARP_VALUE_TYPES.to_vec();
+
+    fields
+        .iter()
+        .filter(|f| f.is_optional)
+        .map(|f| {
+            let type_expr = &f.type_expr;
+            quote! {
+                {
+                    let csharp_type = #type_expr;
+                    ![#(#value_types),*].contains(&csharp_type.as_str())
+                }
+            }
+        })
+        .collect()
+}
 
 impl DerivedCSharp {
     /// Converts the IR into a complete `impl CSharp for T` token stream.
@@ -135,7 +171,7 @@ impl DerivedCSharp {
 mod tests {
     use super::*;
     use crate::config::{CSharpNamespace, CSharpVersion, Serializer};
-    use crate::types::{CSharpField, CSharpVariant, EnumTagging, TaggedVariant, TaggedVariantData};
+    use crate::types::{CSharpVariant, EnumTagging, TaggedVariant, TaggedVariantData};
     use std::path::PathBuf;
 
     /// Helper to build a minimal record IR with one field.
@@ -1203,10 +1239,11 @@ mod tests {
         let ir = sample_adjacent_tagged_enum_ir();
         let tokens = ir.into_token_stream(&config).to_string();
 
-        // Struct variant should access content element.
+        // Struct variant inlines the content element access to stay valid
+        // inside a switch expression (no block body / return allowed).
         assert!(
-            tokens.contains("contentElement"),
-            "STJ adjacent Read struct variant should use contentElement:\n{tokens}"
+            tokens.contains("GetProperty"),
+            "STJ adjacent Read struct variant should use GetProperty:\n{tokens}"
         );
         assert!(
             tokens.contains(r#"content = "c""#),
@@ -1626,6 +1663,81 @@ mod tests {
         assert!(
             tokens.contains("namespace Test.Ns"),
             "C# 9 enum should contain namespace:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn record_with_optional_ref_type_has_nullable_enable() {
+        let config = stj_config();
+        let ir = DerivedCSharp {
+            rust_ident: quote::format_ident!("WithOptStr"),
+            csharp_name: String::from("WithOptStr"),
+            namespace: CSharpNamespace::new("Ns").unwrap(),
+            kind: DerivedCSharpKind::Record(vec![CSharpField {
+                csharp_property_name: String::from("Name"),
+                json_name: String::from("name"),
+                type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                is_optional: true,
+            }]),
+            export: false,
+            export_to: None,
+        };
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        // The generated code should contain the nullable check logic
+        // that uses the CSHARP_VALUE_TYPES list to determine if #nullable enable is needed.
+        assert!(
+            tokens.contains("nullable"),
+            "record with optional ref type should contain nullable check logic:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn record_with_no_optional_fields_no_nullable_check() {
+        let config = stj_config();
+        let ir = sample_ir(false, None); // has one non-optional String field
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        // No optional fields means the nullable_checks vec should be empty.
+        // Strip whitespace before matching so we're resilient to any
+        // formatting differences in proc_macro2's `TokenStream::to_string`.
+        let collapsed: String = tokens.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(
+            collapsed.contains("nullable_checks:Vec<bool>=vec![]"),
+            "record with no optional fields should have empty nullable_checks vec:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn tagged_enum_with_optional_ref_field_has_nullable_check() {
+        let config = stj_config();
+        let ir = DerivedCSharp {
+            rust_ident: quote::format_ident!("Event"),
+            csharp_name: String::from("Event"),
+            namespace: CSharpNamespace::new("Ns").unwrap(),
+            kind: DerivedCSharpKind::TaggedEnum {
+                tagging: EnumTagging::Internal {
+                    tag: String::from("type"),
+                },
+                variants: vec![TaggedVariant {
+                    csharp_name: String::from("Data"),
+                    json_name: String::from("Data"),
+                    data: TaggedVariantData::Struct(vec![CSharpField {
+                        csharp_property_name: String::from("Payload"),
+                        json_name: String::from("payload"),
+                        type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                        is_optional: true,
+                    }]),
+                }],
+            },
+            export: false,
+            export_to: None,
+        };
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        assert!(
+            tokens.contains("nullable"),
+            "tagged enum with optional ref field should contain nullable check:\n{tokens}"
         );
     }
 }

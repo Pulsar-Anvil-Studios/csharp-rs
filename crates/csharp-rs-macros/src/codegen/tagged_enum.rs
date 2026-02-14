@@ -11,7 +11,7 @@
 //! `private sealed class` inside the abstract record.
 
 use crate::config::{CSharpConfig, CSharpVersion, Serializer};
-use crate::types::{CSharpField, EnumTagging, TaggedVariant, TaggedVariantData};
+use crate::types::{CSharpField, EnumTagging, FlattenKind, TaggedVariant, TaggedVariantData};
 use proc_macro2::TokenStream;
 use quote::quote;
 
@@ -136,7 +136,19 @@ pub fn build_tagged_enum_definition(
         && config.serializer == Serializer::SystemTextJson
         && config.target >= CSharpVersion::CSharp11;
 
-    let using_block = build_using_block(config, use_native_polymorphism);
+    // A HashMap flatten field always emits a nullable `Dictionary<…>?
+    // ExtensionData` reference-type property, so the file needs `#nullable
+    // enable` unconditionally when any variant contains one.
+    // Also determines whether the native polymorphism using block needs
+    // `System.Text.Json` for `JsonElement`.
+    let has_hashmap_flatten = variants.iter().any(|v| match &v.data {
+        TaggedVariantData::Struct(fields) => fields
+            .iter()
+            .any(|f| matches!(f.flatten, FlattenKind::HashMap { .. })),
+        _ => false,
+    });
+
+    let using_block = build_using_block(config, use_native_polymorphism, has_hashmap_flatten);
     let class_attrs =
         build_class_attributes(csharp_name, tagging, variants, use_native_polymorphism);
 
@@ -172,6 +184,7 @@ pub fn build_tagged_enum_definition(
             indent,
             &variant_exprs,
             converter_expr.as_ref(),
+            has_hashmap_flatten,
             &nullable_checks,
         )
     } else {
@@ -183,14 +196,23 @@ pub fn build_tagged_enum_definition(
             indent,
             &variant_exprs,
             converter_expr.as_ref(),
+            has_hashmap_flatten,
             &nullable_checks,
         )
     }
 }
 
 /// Determines the `using` directives for the generated file.
-fn build_using_block(config: &CSharpConfig, use_native_polymorphism: bool) -> String {
+fn build_using_block(
+    config: &CSharpConfig,
+    use_native_polymorphism: bool,
+    has_hashmap_flatten: bool,
+) -> String {
     if use_native_polymorphism {
+        if has_hashmap_flatten {
+            // Need System.Text.Json for JsonElement used by [JsonExtensionData].
+            return String::from("using System.Text.Json;\nusing System.Text.Json.Serialization;");
+        }
         // Native [JsonPolymorphic] path: only need Serialization namespace.
         return String::from("using System.Text.Json.Serialization;");
     }
@@ -331,42 +353,13 @@ fn build_struct_variant(
     base_indent: &str,
     use_required: bool,
 ) -> TokenStream {
-    let attr_name = json_attr_name(config);
     let prop_indent = format!("{base_indent}    ");
-    let required_kw = if use_required { "required " } else { "" };
-
-    let field_exprs: Vec<TokenStream> = fields
-        .iter()
-        .map(|f| {
-            let prop_name = &f.csharp_property_name;
-            let json_name = &f.json_name;
-            let is_optional = f.is_optional;
-            let type_expr = &f.type_expr;
-
-            quote! {
-                {
-                    let csharp_type = #type_expr;
-                    let nullable = if #is_optional { "?" } else { "" };
-                    let req = if #is_optional { "" } else { #required_kw };
-                    format!(
-                        "{prop}[{attr}(\"{json}\")]\n\
-                         {prop}public {req}{ty}{null} {name} {{ get; init; }}",
-                        prop = #prop_indent,
-                        attr = #attr_name,
-                        json = #json_name,
-                        req = req,
-                        ty = csharp_type,
-                        null = nullable,
-                        name = #prop_name,
-                    )
-                }
-            }
-        })
-        .collect();
+    let field_exprs = build_struct_variant_fields(fields, config, &prop_indent, use_required);
 
     quote! {
         {
-            let field_parts: Vec<String> = vec![#(#field_exprs),*];
+            let mut field_parts: Vec<String> = Vec::new();
+            #(#field_exprs)*
             let fields_block = field_parts.join("\n");
             format!(
                 "{base}public sealed record {name} : {parent}\n\
@@ -382,12 +375,250 @@ fn build_struct_variant(
     }
 }
 
+/// Builds the property declaration token streams for a struct variant's fields.
+///
+/// Dispatches on [`FlattenKind`] for each field:
+/// - `None`: standard `[JsonPropertyName]` + property declaration
+/// - `Struct`: runtime iteration over `csharp_fields()` with property + extension data handling
+/// - `HashMap`: `[JsonExtensionData]` dictionary property
+fn build_struct_variant_fields(
+    fields: &[CSharpField],
+    config: &CSharpConfig,
+    prop_indent: &str,
+    use_required: bool,
+) -> Vec<TokenStream> {
+    let attr_name = json_attr_name(config);
+    let required_kw = if use_required { "required " } else { "" };
+
+    let extension_data_type = match config.serializer {
+        Serializer::SystemTextJson => "Dictionary<string, JsonElement>",
+        Serializer::Newtonsoft => "Dictionary<string, JToken>",
+    };
+
+    fields
+        .iter()
+        .map(|f| match &f.flatten {
+            FlattenKind::None => {
+                let prop_name = &f.csharp_property_name;
+                let json_name = &f.json_name;
+                let is_optional = f.is_optional;
+                let type_expr = &f.type_expr;
+
+                quote! {
+                    field_parts.push({
+                        let csharp_type = #type_expr;
+                        let nullable = if #is_optional { "?" } else { "" };
+                        let req = if #is_optional { "" } else { #required_kw };
+                        format!(
+                            "{prop}[{attr}(\"{json}\")]\n\
+                             {prop}public {req}{ty}{null} {name} {{ get; init; }}",
+                            prop = #prop_indent,
+                            attr = #attr_name,
+                            json = #json_name,
+                            req = req,
+                            ty = csharp_type,
+                            null = nullable,
+                            name = #prop_name,
+                        )
+                    });
+                }
+            }
+            FlattenKind::Struct => {
+                let type_expr = &f.type_expr;
+                quote! {
+                    for field_info in #type_expr {
+                        match field_info {
+                            csharp_rs::CSharpFieldInfo::Property {
+                                property_name,
+                                json_name,
+                                type_name,
+                                is_optional,
+                            } => {
+                                let nullable = if is_optional { "?" } else { "" };
+                                let req = if is_optional { "" } else { #required_kw };
+                                field_parts.push(format!(
+                                    "{prop}[{attr}(\"{json}\")]\n\
+                                     {prop}public {req}{ty}{null} {name} {{ get; init; }}",
+                                    prop = #prop_indent,
+                                    attr = #attr_name,
+                                    json = json_name,
+                                    req = req,
+                                    ty = type_name,
+                                    null = nullable,
+                                    name = property_name,
+                                ));
+                            }
+                            csharp_rs::CSharpFieldInfo::ExtensionData { .. } => {
+                                field_parts.push(format!(
+                                    "{prop}[JsonExtensionData]\n\
+                                     {prop}public {ext_type}? ExtensionData {{ get; set; }}",
+                                    prop = #prop_indent,
+                                    ext_type = #extension_data_type,
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            FlattenKind::HashMap { .. } => {
+                quote! {
+                    field_parts.push(format!(
+                        "{prop}[JsonExtensionData]\n\
+                         {prop}public {ext_type}? ExtensionData {{ get; set; }}",
+                        prop = #prop_indent,
+                        ext_type = #extension_data_type,
+                    ));
+                }
+            }
+        })
+        .collect()
+}
+
 /// Returns the JSON attribute name for a property based on the serializer.
 fn json_attr_name(config: &CSharpConfig) -> &'static str {
     match config.serializer {
         Serializer::SystemTextJson => "JsonPropertyName",
         Serializer::Newtonsoft => "JsonProperty",
     }
+}
+
+/// Builds per-field write expressions for converter struct arms.
+///
+/// Returns `Vec<TokenStream>` where each item is a statement pushing
+/// onto a pre-existing `field_lines: Vec<String>`. Handles all three
+/// [`FlattenKind`] variants:
+/// - `None`: compile-time property write
+/// - `Struct`: runtime iteration over `csharp_fields()`
+/// - `HashMap`: skipped (extension data handled by serializer)
+fn build_write_field_exprs(
+    fields: &[CSharpField],
+    var_name: &str,
+    body_indent: &str,
+    config: &CSharpConfig,
+) -> Vec<TokenStream> {
+    let serialize_call = match config.serializer {
+        Serializer::SystemTextJson => "JsonSerializer.Serialize(writer, {var}.{prop}, options);",
+        Serializer::Newtonsoft => "serializer.Serialize(writer, {var}.{prop});",
+    };
+
+    fields
+        .iter()
+        .filter_map(|f| {
+            match &f.flatten {
+                FlattenKind::None => {
+                    let json = &f.json_name;
+                    let prop = &f.csharp_property_name;
+                    Some(quote! {
+                        field_lines.push(format!(
+                            concat!(
+                                "{body}writer.WritePropertyName(\"{json}\");\n",
+                                "{body}", #serialize_call,
+                            ),
+                            body = #body_indent,
+                            json = #json,
+                            var = #var_name,
+                            prop = #prop,
+                        ));
+                    })
+                }
+                FlattenKind::Struct => {
+                    let type_expr = &f.type_expr;
+                    Some(quote! {
+                        for field_info in #type_expr {
+                            match field_info {
+                                csharp_rs::CSharpFieldInfo::Property {
+                                    property_name,
+                                    json_name,
+                                    type_name: _,
+                                    ..
+                                } => {
+                                    field_lines.push(format!(
+                                        concat!(
+                                            "{body}writer.WritePropertyName(\"{json}\");\n",
+                                            "{body}", #serialize_call,
+                                        ),
+                                        body = #body_indent,
+                                        json = json_name,
+                                        var = #var_name,
+                                        prop = property_name,
+                                    ));
+                                }
+                                csharp_rs::CSharpFieldInfo::ExtensionData { .. } => {}
+                            }
+                        }
+                    })
+                }
+                // Extension data is handled by the serializer; nothing to write.
+                FlattenKind::HashMap { .. } => None,
+            }
+        })
+        .collect()
+}
+
+/// Builds per-field read expressions for converter struct arms.
+///
+/// `read_fmt` is a format template with placeholders `{indent}`, `{name}`,
+/// `{json}`, `{ty}` — e.g.:
+/// - STJ internal: `"{indent}{name} = root.GetProperty(\"{json}\").Deserialize<{ty}>(options),"`
+/// - Newtonsoft external: `"{indent}{name} = obj[\"{json}\"].ToObject<{ty}>(serializer),"`
+///
+/// Returns `Vec<TokenStream>` where each item pushes onto `field_lines`.
+fn build_read_field_exprs(
+    fields: &[CSharpField],
+    indent: &str,
+    read_fmt: &str,
+) -> Vec<TokenStream> {
+    fields
+        .iter()
+        .filter_map(|f| {
+            match &f.flatten {
+                FlattenKind::None => {
+                    let prop_name = &f.csharp_property_name;
+                    let field_json = &f.json_name;
+                    let type_expr = &f.type_expr;
+
+                    Some(quote! {
+                        {
+                            let csharp_type = #type_expr;
+                            field_lines.push(format!(
+                                #read_fmt,
+                                indent = #indent,
+                                name = #prop_name,
+                                json = #field_json,
+                                ty = csharp_type,
+                            ));
+                        }
+                    })
+                }
+                FlattenKind::Struct => {
+                    let type_expr = &f.type_expr;
+                    Some(quote! {
+                        for field_info in #type_expr {
+                            match field_info {
+                                csharp_rs::CSharpFieldInfo::Property {
+                                    property_name,
+                                    json_name,
+                                    type_name,
+                                    ..
+                                } => {
+                                    field_lines.push(format!(
+                                        #read_fmt,
+                                        indent = #indent,
+                                        name = property_name,
+                                        json = json_name,
+                                        ty = type_name,
+                                    ));
+                                }
+                                csharp_rs::CSharpFieldInfo::ExtensionData { .. } => {}
+                            }
+                        }
+                    })
+                }
+                // Extension data is handled by the serializer; nothing to read.
+                FlattenKind::HashMap { .. } => None,
+            }
+        })
+        .collect()
 }
 
 /// Builds the optional converter block for tagged enums.
@@ -424,12 +655,14 @@ fn build_converter_block(
                     tag,
                     variants,
                     base_indent,
+                    config,
                 )),
                 Serializer::Newtonsoft => Some(build_internal_newtonsoft_converter(
                     csharp_name,
                     tag,
                     variants,
                     base_indent,
+                    config,
                 )),
             }
         }
@@ -445,11 +678,13 @@ fn build_converter_block(
                     csharp_name,
                     variants,
                     base_indent,
+                    config,
                 )),
                 Serializer::Newtonsoft => Some(build_external_newtonsoft_converter(
                     csharp_name,
                     variants,
                     base_indent,
+                    config,
                 )),
             }
         }
@@ -467,6 +702,7 @@ fn build_converter_block(
                     content,
                     variants,
                     base_indent,
+                    config,
                 )),
                 Serializer::Newtonsoft => Some(build_adjacent_newtonsoft_converter(
                     csharp_name,
@@ -474,6 +710,7 @@ fn build_converter_block(
                     content,
                     variants,
                     base_indent,
+                    config,
                 )),
             }
         }
@@ -489,11 +726,13 @@ fn build_converter_block(
                     csharp_name,
                     variants,
                     base_indent,
+                    config,
                 )),
                 Serializer::Newtonsoft => Some(build_untagged_newtonsoft_converter(
                     csharp_name,
                     variants,
                     base_indent,
+                    config,
                 )),
             }
         }
@@ -510,6 +749,7 @@ fn build_internal_stj_converter(
     tag: &str,
     variants: &[TaggedVariant],
     base_indent: &str,
+    config: &CSharpConfig,
 ) -> TokenStream {
     let inner = format!("{base_indent}    ");
     let inner2 = format!("{inner}    ");
@@ -523,7 +763,7 @@ fn build_internal_stj_converter(
 
     let write_arms: Vec<TokenStream> = variants
         .iter()
-        .map(|v| build_stj_write_arm(v, tag, &inner3, &inner4))
+        .map(|v| build_stj_write_arm(v, tag, &inner3, &inner4, config))
         .collect();
 
     quote! {
@@ -592,6 +832,7 @@ fn build_internal_newtonsoft_converter(
     tag: &str,
     variants: &[TaggedVariant],
     base_indent: &str,
+    config: &CSharpConfig,
 ) -> TokenStream {
     let inner = format!("{base_indent}    ");
     let inner2 = format!("{inner}    ");
@@ -605,7 +846,7 @@ fn build_internal_newtonsoft_converter(
 
     let write_arms: Vec<TokenStream> = variants
         .iter()
-        .map(|v| build_newtonsoft_write_arm(v, tag, &inner3, &inner4))
+        .map(|v| build_newtonsoft_write_arm(v, tag, &inner3, &inner4, config))
         .collect();
 
     quote! {
@@ -703,6 +944,11 @@ fn build_stj_read_arm(variant: &TaggedVariant, arm_indent: &str, prop_indent: &s
 }
 
 /// Builds a STJ Read switch arm for a struct variant with named fields.
+///
+/// Handles flattened fields by dispatching on [`FlattenKind`]:
+/// - `None`: regular property deserialized from `root.GetProperty(...)`.
+/// - `Struct`: iterates `csharp_fields()` at runtime and inlines each property.
+/// - `HashMap`: skipped (extension data is not read back).
 fn build_stj_read_struct_arm(
     csharp_name: &str,
     json_name: &str,
@@ -710,31 +956,13 @@ fn build_stj_read_struct_arm(
     arm_indent: &str,
     prop_indent: &str,
 ) -> TokenStream {
-    let field_exprs: Vec<TokenStream> = fields
-        .iter()
-        .map(|f| {
-            let prop_name = &f.csharp_property_name;
-            let field_json = &f.json_name;
-            let type_expr = &f.type_expr;
-
-            quote! {
-                {
-                    let csharp_type = #type_expr;
-                    format!(
-                        "{prop}{name} = root.GetProperty(\"{json}\").Deserialize<{ty}>(options),",
-                        prop = #prop_indent,
-                        name = #prop_name,
-                        json = #field_json,
-                        ty = csharp_type,
-                    )
-                }
-            }
-        })
-        .collect();
+    let read_fmt = "{indent}{name} = root.GetProperty(\"{json}\").Deserialize<{ty}>(options),";
+    let field_exprs = build_read_field_exprs(fields, prop_indent, read_fmt);
 
     quote! {
         {
-            let field_lines: Vec<String> = vec![#(#field_exprs),*];
+            let mut field_lines: Vec<String> = Vec::new();
+            #(#field_exprs)*
             let fields_str = field_lines.join("\n");
             format!(
                 "{arm}\"{json}\" => new {name}\n\
@@ -756,6 +984,7 @@ fn build_stj_write_arm(
     tag: &str,
     case_indent: &str,
     body_indent: &str,
+    config: &CSharpConfig,
 ) -> TokenStream {
     let json_name = &variant.json_name;
     let csharp_name = &variant.csharp_name;
@@ -798,11 +1027,20 @@ fn build_stj_write_arm(
             tag,
             case_indent,
             body_indent,
+            config,
         ),
     }
 }
 
 /// Builds a STJ Write switch arm for a struct variant with named fields.
+/// Handles flattened fields by dispatching on [`FlattenKind`]:
+/// - `None`: regular compile-time property write
+/// - `Struct`: runtime iteration over `csharp_fields()` properties
+/// - `HashMap`: skipped (extension data handled by serializer)
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal tagging needs tag key in addition to standard arm params plus config"
+)]
 fn build_stj_write_struct_arm(
     csharp_name: &str,
     json_name: &str,
@@ -811,29 +1049,30 @@ fn build_stj_write_struct_arm(
     tag: &str,
     case_indent: &str,
     body_indent: &str,
+    config: &CSharpConfig,
 ) -> TokenStream {
-    let field_lines: Vec<String> = fields
-        .iter()
-        .map(|f| {
-            let json = &f.json_name;
-            let prop = &f.csharp_property_name;
+    let field_exprs = build_write_field_exprs(fields, var_name, body_indent, config);
+
+    quote! {
+        {
+            let mut field_lines: Vec<String> = Vec::new();
+            #(#field_exprs)*
+            let fields_block = field_lines.join("\n");
             format!(
-                "{body_indent}writer.WritePropertyName(\"{json}\");\n\
-                 {body_indent}JsonSerializer.Serialize(writer, {var_name}.{prop}, options);",
+                "{case}case {name} {var}:\n\
+                 {body}writer.WriteString(\"{tag}\", \"{json}\");\n\
+                 {fields}\n\
+                 {body}break;",
+                case = #case_indent,
+                name = #csharp_name,
+                var = #var_name,
+                body = #body_indent,
+                tag = #tag,
+                json = #json_name,
+                fields = fields_block,
             )
-        })
-        .collect();
-
-    let fields_block = field_lines.join("\n");
-
-    let arm = format!(
-        "{case_indent}case {csharp_name} {var_name}:\n\
-         {body_indent}writer.WriteString(\"{tag}\", \"{json_name}\");\n\
-         {fields_block}\n\
-         {body_indent}break;",
-    );
-
-    quote! { String::from(#arm) }
+        }
+    }
 }
 
 /// Builds a single Newtonsoft Read switch arm for a variant.
@@ -879,6 +1118,11 @@ fn build_newtonsoft_read_arm(
 }
 
 /// Builds a Newtonsoft Read switch arm for a struct variant with named fields.
+///
+/// Handles flattened fields by dispatching on [`FlattenKind`]:
+/// - `None`: regular property deserialized from `obj["{json}"]`.
+/// - `Struct`: iterates `csharp_fields()` at runtime and inlines each property.
+/// - `HashMap`: skipped (extension data is not read back).
 fn build_newtonsoft_read_struct_arm(
     csharp_name: &str,
     json_name: &str,
@@ -886,31 +1130,13 @@ fn build_newtonsoft_read_struct_arm(
     arm_indent: &str,
     prop_indent: &str,
 ) -> TokenStream {
-    let field_exprs: Vec<TokenStream> = fields
-        .iter()
-        .map(|f| {
-            let prop_name = &f.csharp_property_name;
-            let field_json = &f.json_name;
-            let type_expr = &f.type_expr;
-
-            quote! {
-                {
-                    let csharp_type = #type_expr;
-                    format!(
-                        "{prop}{name} = obj[\"{json}\"].ToObject<{ty}>(serializer),",
-                        prop = #prop_indent,
-                        name = #prop_name,
-                        json = #field_json,
-                        ty = csharp_type,
-                    )
-                }
-            }
-        })
-        .collect();
+    let read_fmt = "{indent}{name} = obj[\"{json}\"].ToObject<{ty}>(serializer),";
+    let field_exprs = build_read_field_exprs(fields, prop_indent, read_fmt);
 
     quote! {
         {
-            let field_lines: Vec<String> = vec![#(#field_exprs),*];
+            let mut field_lines: Vec<String> = Vec::new();
+            #(#field_exprs)*
             let fields_str = field_lines.join("\n");
             format!(
                 "{arm}\"{json}\" => new {name}\n\
@@ -932,6 +1158,7 @@ fn build_newtonsoft_write_arm(
     tag: &str,
     case_indent: &str,
     body_indent: &str,
+    config: &CSharpConfig,
 ) -> TokenStream {
     let json_name = &variant.json_name;
     let csharp_name = &variant.csharp_name;
@@ -976,11 +1203,20 @@ fn build_newtonsoft_write_arm(
             tag,
             case_indent,
             body_indent,
+            config,
         ),
     }
 }
 
 /// Builds a Newtonsoft Write switch arm for a struct variant with named fields.
+/// Handles flattened fields by dispatching on [`FlattenKind`]:
+/// - `None`: regular compile-time property write
+/// - `Struct`: runtime iteration over `csharp_fields()` properties
+/// - `HashMap`: skipped (extension data handled by serializer)
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal tagging needs tag key in addition to standard arm params plus config"
+)]
 fn build_newtonsoft_write_struct_arm(
     csharp_name: &str,
     json_name: &str,
@@ -989,30 +1225,31 @@ fn build_newtonsoft_write_struct_arm(
     tag: &str,
     case_indent: &str,
     body_indent: &str,
+    config: &CSharpConfig,
 ) -> TokenStream {
-    let field_lines: Vec<String> = fields
-        .iter()
-        .map(|f| {
-            let json = &f.json_name;
-            let prop = &f.csharp_property_name;
+    let field_exprs = build_write_field_exprs(fields, var_name, body_indent, config);
+
+    quote! {
+        {
+            let mut field_lines: Vec<String> = Vec::new();
+            #(#field_exprs)*
+            let fields_block = field_lines.join("\n");
             format!(
-                "{body_indent}writer.WritePropertyName(\"{json}\");\n\
-                 {body_indent}serializer.Serialize(writer, {var_name}.{prop});",
+                "{case}case {name} {var}:\n\
+                 {body}writer.WritePropertyName(\"{tag}\");\n\
+                 {body}writer.WriteValue(\"{json}\");\n\
+                 {fields}\n\
+                 {body}break;",
+                case = #case_indent,
+                name = #csharp_name,
+                var = #var_name,
+                body = #body_indent,
+                tag = #tag,
+                json = #json_name,
+                fields = fields_block,
             )
-        })
-        .collect();
-
-    let fields_block = field_lines.join("\n");
-
-    let arm = format!(
-        "{case_indent}case {csharp_name} {var_name}:\n\
-         {body_indent}writer.WritePropertyName(\"{tag}\");\n\
-         {body_indent}writer.WriteValue(\"{json_name}\");\n\
-         {fields_block}\n\
-         {body_indent}break;",
-    );
-
-    quote! { String::from(#arm) }
+        }
+    }
 }
 
 /// Builds the STJ `JsonConverter<T>` for externally tagged enums.
@@ -1028,6 +1265,7 @@ fn build_external_stj_converter(
     csharp_name: &str,
     variants: &[TaggedVariant],
     base_indent: &str,
+    config: &CSharpConfig,
 ) -> TokenStream {
     let inner = format!("{base_indent}    ");
     let inner2 = format!("{inner}    ");
@@ -1049,7 +1287,7 @@ fn build_external_stj_converter(
 
     let write_arms: Vec<TokenStream> = variants
         .iter()
-        .map(|v| build_external_stj_write_arm(v, &inner3, &inner4))
+        .map(|v| build_external_stj_write_arm(v, &inner3, &inner4, config))
         .collect();
 
     quote! {
@@ -1176,31 +1414,14 @@ fn build_external_stj_read_object_arm(
             }
         }
         TaggedVariantData::Struct(fields) => {
-            let field_exprs: Vec<TokenStream> = fields
-                .iter()
-                .map(|f| {
-                    let field_prop_name = &f.csharp_property_name;
-                    let field_json = &f.json_name;
-                    let field_type_expr = &f.type_expr;
-
-                    quote! {
-                        {
-                            let csharp_type = #field_type_expr;
-                            format!(
-                                "{prop}{name} = prop.Value.GetProperty(\"{json}\").Deserialize<{ty}>(options),",
-                                prop = #prop_indent,
-                                name = #field_prop_name,
-                                json = #field_json,
-                                ty = csharp_type,
-                            )
-                        }
-                    }
-                })
-                .collect();
+            let read_fmt =
+                "{indent}{name} = prop.Value.GetProperty(\"{json}\").Deserialize<{ty}>(options),";
+            let field_exprs = build_read_field_exprs(fields, prop_indent, read_fmt);
 
             quote! {
                 {
-                    let field_lines: Vec<String> = vec![#(#field_exprs),*];
+                    let mut field_lines: Vec<String> = Vec::new();
+                    #(#field_exprs)*
                     let fields_str = field_lines.join("\n");
                     format!(
                         "{arm}\"{json}\" => new {name}\n\
@@ -1226,6 +1447,7 @@ fn build_external_stj_write_arm(
     variant: &TaggedVariant,
     case_indent: &str,
     body_indent: &str,
+    config: &CSharpConfig,
 ) -> TokenStream {
     let json_name = &variant.json_name;
     let csharp_name = &variant.csharp_name;
@@ -1267,6 +1489,7 @@ fn build_external_stj_write_arm(
             fields,
             case_indent,
             body_indent,
+            config,
         ),
     }
 }
@@ -1275,6 +1498,11 @@ fn build_external_stj_write_arm(
 ///
 /// Wraps the struct fields in a nested object keyed by the variant name:
 /// `{"VariantName": {"field1": ..., "field2": ...}}`.
+///
+/// Handles flattened fields by dispatching on [`FlattenKind`]:
+/// - `None`: regular compile-time property write
+/// - `Struct`: runtime iteration over `csharp_fields()` properties
+/// - `HashMap`: skipped (extension data handled by serializer)
 fn build_external_stj_write_struct_arm(
     csharp_name: &str,
     json_name: &str,
@@ -1282,33 +1510,33 @@ fn build_external_stj_write_struct_arm(
     fields: &[CSharpField],
     case_indent: &str,
     body_indent: &str,
+    config: &CSharpConfig,
 ) -> TokenStream {
-    let field_lines: Vec<String> = fields
-        .iter()
-        .map(|f| {
-            let json = &f.json_name;
-            let prop = &f.csharp_property_name;
+    let field_exprs = build_write_field_exprs(fields, var_name, body_indent, config);
+
+    quote! {
+        {
+            let mut field_lines: Vec<String> = Vec::new();
+            #(#field_exprs)*
+            let fields_block = field_lines.join("\n");
             format!(
-                "{body_indent}writer.WritePropertyName(\"{json}\");\n\
-                 {body_indent}JsonSerializer.Serialize(writer, {var_name}.{prop}, options);",
+                "{case}case {name} {var}:\n\
+                 {body}writer.WriteStartObject();\n\
+                 {body}writer.WritePropertyName(\"{json}\");\n\
+                 {body}writer.WriteStartObject();\n\
+                 {fields}\n\
+                 {body}writer.WriteEndObject();\n\
+                 {body}writer.WriteEndObject();\n\
+                 {body}break;",
+                case = #case_indent,
+                name = #csharp_name,
+                var = #var_name,
+                body = #body_indent,
+                json = #json_name,
+                fields = fields_block,
             )
-        })
-        .collect();
-
-    let fields_block = field_lines.join("\n");
-
-    let arm = format!(
-        "{case_indent}case {csharp_name} {var_name}:\n\
-         {body_indent}writer.WriteStartObject();\n\
-         {body_indent}writer.WritePropertyName(\"{json_name}\");\n\
-         {body_indent}writer.WriteStartObject();\n\
-         {fields_block}\n\
-         {body_indent}writer.WriteEndObject();\n\
-         {body_indent}writer.WriteEndObject();\n\
-         {body_indent}break;",
-    );
-
-    quote! { String::from(#arm) }
+        }
+    }
 }
 
 /// Builds the Newtonsoft `JsonConverter<T>` for externally tagged enums.
@@ -1321,6 +1549,7 @@ fn build_external_newtonsoft_converter(
     csharp_name: &str,
     variants: &[TaggedVariant],
     base_indent: &str,
+    config: &CSharpConfig,
 ) -> TokenStream {
     let inner = format!("{base_indent}    ");
     let inner2 = format!("{inner}    ");
@@ -1342,7 +1571,7 @@ fn build_external_newtonsoft_converter(
 
     let write_arms: Vec<TokenStream> = variants
         .iter()
-        .map(|v| build_external_newtonsoft_write_arm(v, &inner3, &inner4))
+        .map(|v| build_external_newtonsoft_write_arm(v, &inner3, &inner4, config))
         .collect();
 
     quote! {
@@ -1465,31 +1694,13 @@ fn build_external_newtonsoft_read_object_arm(
             }
         }
         TaggedVariantData::Struct(fields) => {
-            let field_exprs: Vec<TokenStream> = fields
-                .iter()
-                .map(|f| {
-                    let field_prop_name = &f.csharp_property_name;
-                    let field_json = &f.json_name;
-                    let field_type_expr = &f.type_expr;
-
-                    quote! {
-                        {
-                            let csharp_type = #field_type_expr;
-                            format!(
-                                "{prop}{name} = prop.Value[\"{json}\"].ToObject<{ty}>(serializer),",
-                                prop = #prop_indent,
-                                name = #field_prop_name,
-                                json = #field_json,
-                                ty = csharp_type,
-                            )
-                        }
-                    }
-                })
-                .collect();
+            let read_fmt = "{indent}{name} = prop.Value[\"{json}\"].ToObject<{ty}>(serializer),";
+            let field_exprs = build_read_field_exprs(fields, prop_indent, read_fmt);
 
             quote! {
                 {
-                    let field_lines: Vec<String> = vec![#(#field_exprs),*];
+                    let mut field_lines: Vec<String> = Vec::new();
+                    #(#field_exprs)*
                     let fields_str = field_lines.join("\n");
                     format!(
                         "{arm}\"{json}\" => new {name}\n\
@@ -1513,6 +1724,7 @@ fn build_external_newtonsoft_write_arm(
     variant: &TaggedVariant,
     case_indent: &str,
     body_indent: &str,
+    config: &CSharpConfig,
 ) -> TokenStream {
     let json_name = &variant.json_name;
     let csharp_name = &variant.csharp_name;
@@ -1554,12 +1766,18 @@ fn build_external_newtonsoft_write_arm(
             fields,
             case_indent,
             body_indent,
+            config,
         ),
     }
 }
 
 /// Builds a Newtonsoft Write switch arm for a struct variant in external
 /// tagging.
+///
+/// Handles flattened fields by dispatching on [`FlattenKind`]:
+/// - `None`: regular compile-time property write
+/// - `Struct`: runtime iteration over `csharp_fields()` properties
+/// - `HashMap`: skipped (extension data handled by serializer)
 fn build_external_newtonsoft_write_struct_arm(
     csharp_name: &str,
     json_name: &str,
@@ -1567,33 +1785,33 @@ fn build_external_newtonsoft_write_struct_arm(
     fields: &[CSharpField],
     case_indent: &str,
     body_indent: &str,
+    config: &CSharpConfig,
 ) -> TokenStream {
-    let field_lines: Vec<String> = fields
-        .iter()
-        .map(|f| {
-            let json = &f.json_name;
-            let prop = &f.csharp_property_name;
+    let field_exprs = build_write_field_exprs(fields, var_name, body_indent, config);
+
+    quote! {
+        {
+            let mut field_lines: Vec<String> = Vec::new();
+            #(#field_exprs)*
+            let fields_block = field_lines.join("\n");
             format!(
-                "{body_indent}writer.WritePropertyName(\"{json}\");\n\
-                 {body_indent}serializer.Serialize(writer, {var_name}.{prop});",
+                "{case}case {name} {var}:\n\
+                 {body}writer.WriteStartObject();\n\
+                 {body}writer.WritePropertyName(\"{json}\");\n\
+                 {body}writer.WriteStartObject();\n\
+                 {fields}\n\
+                 {body}writer.WriteEndObject();\n\
+                 {body}writer.WriteEndObject();\n\
+                 {body}break;",
+                case = #case_indent,
+                name = #csharp_name,
+                var = #var_name,
+                body = #body_indent,
+                json = #json_name,
+                fields = fields_block,
             )
-        })
-        .collect();
-
-    let fields_block = field_lines.join("\n");
-
-    let arm = format!(
-        "{case_indent}case {csharp_name} {var_name}:\n\
-         {body_indent}writer.WriteStartObject();\n\
-         {body_indent}writer.WritePropertyName(\"{json_name}\");\n\
-         {body_indent}writer.WriteStartObject();\n\
-         {fields_block}\n\
-         {body_indent}writer.WriteEndObject();\n\
-         {body_indent}writer.WriteEndObject();\n\
-         {body_indent}break;",
-    );
-
-    quote! { String::from(#arm) }
+        }
+    }
 }
 
 /// Builds the STJ `JsonConverter<T>` for adjacently tagged enums.
@@ -1609,6 +1827,7 @@ fn build_adjacent_stj_converter(
     content: &str,
     variants: &[TaggedVariant],
     base_indent: &str,
+    config: &CSharpConfig,
 ) -> TokenStream {
     let inner = format!("{base_indent}    ");
     let inner2 = format!("{inner}    ");
@@ -1622,7 +1841,7 @@ fn build_adjacent_stj_converter(
 
     let write_arms: Vec<TokenStream> = variants
         .iter()
-        .map(|v| build_adjacent_stj_write_arm(v, tag, content, &inner3, &inner4))
+        .map(|v| build_adjacent_stj_write_arm(v, tag, content, &inner3, &inner4, config))
         .collect();
 
     quote! {
@@ -1732,6 +1951,11 @@ fn build_adjacent_stj_read_arm(
 ///
 /// Reads `root.GetProperty("{content}")` into a content element, then
 /// extracts each field from that content object.
+///
+/// Handles flattened fields by dispatching on [`FlattenKind`]:
+/// - `None`: regular property deserialized from the content sub-element.
+/// - `Struct`: iterates `csharp_fields()` at runtime and inlines each property.
+/// - `HashMap`: skipped (extension data is not read back).
 fn build_adjacent_stj_read_struct_arm(
     csharp_name: &str,
     json_name: &str,
@@ -1740,34 +1964,15 @@ fn build_adjacent_stj_read_struct_arm(
     arm_indent: &str,
     prop_indent: &str,
 ) -> TokenStream {
-    let field_exprs: Vec<TokenStream> = fields
-        .iter()
-        .map(|f| {
-            let prop_name = &f.csharp_property_name;
-            let field_json = &f.json_name;
-            let type_expr = &f.type_expr;
-
-            // Inline the content element access to avoid a local variable,
-            // which would require a block body invalid in switch expressions.
-            quote! {
-                {
-                    let csharp_type = #type_expr;
-                    format!(
-                        "{prop}{name} = root.GetProperty(\"{content}\").GetProperty(\"{json}\").Deserialize<{ty}>(options),",
-                        prop = #prop_indent,
-                        name = #prop_name,
-                        content = #content,
-                        json = #field_json,
-                        ty = csharp_type,
-                    )
-                }
-            }
-        })
-        .collect();
+    let read_fmt = format!(
+        "{{indent}}{{name}} = root.GetProperty(\"{content}\").GetProperty(\"{{json}}\").Deserialize<{{ty}}>(options),"
+    );
+    let field_exprs = build_read_field_exprs(fields, prop_indent, &read_fmt);
 
     quote! {
         {
-            let field_lines: Vec<String> = vec![#(#field_exprs),*];
+            let mut field_lines: Vec<String> = Vec::new();
+            #(#field_exprs)*
             let fields_str = field_lines.join("\n");
             format!(
                 "{arm}\"{json}\" => new {name}\n\
@@ -1794,6 +1999,7 @@ fn build_adjacent_stj_write_arm(
     content: &str,
     case_indent: &str,
     body_indent: &str,
+    config: &CSharpConfig,
 ) -> TokenStream {
     let json_name = &variant.json_name;
     let csharp_name = &variant.csharp_name;
@@ -1843,6 +2049,7 @@ fn build_adjacent_stj_write_arm(
             content,
             case_indent,
             body_indent,
+            config,
         ),
     }
 }
@@ -1851,6 +2058,11 @@ fn build_adjacent_stj_write_arm(
 ///
 /// Writes an outer object with the tag, then a content property containing
 /// a nested object with the struct fields.
+///
+/// Handles flattened fields by dispatching on [`FlattenKind`]:
+/// - `None`: regular compile-time property write
+/// - `Struct`: runtime iteration over `csharp_fields()` properties
+/// - `HashMap`: skipped (extension data handled by serializer)
 #[expect(
     clippy::too_many_arguments,
     reason = "adjacent tagging needs tag + content keys in addition to standard arm params"
@@ -1864,34 +2076,36 @@ fn build_adjacent_stj_write_struct_arm(
     content: &str,
     case_indent: &str,
     body_indent: &str,
+    config: &CSharpConfig,
 ) -> TokenStream {
-    let field_lines: Vec<String> = fields
-        .iter()
-        .map(|f| {
-            let json = &f.json_name;
-            let prop = &f.csharp_property_name;
+    let field_exprs = build_write_field_exprs(fields, var_name, body_indent, config);
+
+    quote! {
+        {
+            let mut field_lines: Vec<String> = Vec::new();
+            #(#field_exprs)*
+            let fields_block = field_lines.join("\n");
             format!(
-                "{body_indent}writer.WritePropertyName(\"{json}\");\n\
-                 {body_indent}JsonSerializer.Serialize(writer, {var_name}.{prop}, options);",
+                "{case}case {name} {var}:\n\
+                 {body}writer.WriteStartObject();\n\
+                 {body}writer.WriteString(\"{tag}\", \"{json}\");\n\
+                 {body}writer.WritePropertyName(\"{content}\");\n\
+                 {body}writer.WriteStartObject();\n\
+                 {fields}\n\
+                 {body}writer.WriteEndObject();\n\
+                 {body}writer.WriteEndObject();\n\
+                 {body}break;",
+                case = #case_indent,
+                name = #csharp_name,
+                var = #var_name,
+                body = #body_indent,
+                tag = #tag,
+                json = #json_name,
+                content = #content,
+                fields = fields_block,
             )
-        })
-        .collect();
-
-    let fields_block = field_lines.join("\n");
-
-    let arm = format!(
-        "{case_indent}case {csharp_name} {var_name}:\n\
-         {body_indent}writer.WriteStartObject();\n\
-         {body_indent}writer.WriteString(\"{tag}\", \"{json_name}\");\n\
-         {body_indent}writer.WritePropertyName(\"{content}\");\n\
-         {body_indent}writer.WriteStartObject();\n\
-         {fields_block}\n\
-         {body_indent}writer.WriteEndObject();\n\
-         {body_indent}writer.WriteEndObject();\n\
-         {body_indent}break;",
-    );
-
-    quote! { String::from(#arm) }
+        }
+    }
 }
 
 /// Builds the Newtonsoft `JsonConverter<T>` for adjacently tagged enums.
@@ -1905,6 +2119,7 @@ fn build_adjacent_newtonsoft_converter(
     content: &str,
     variants: &[TaggedVariant],
     base_indent: &str,
+    config: &CSharpConfig,
 ) -> TokenStream {
     let inner = format!("{base_indent}    ");
     let inner2 = format!("{inner}    ");
@@ -1918,7 +2133,7 @@ fn build_adjacent_newtonsoft_converter(
 
     let write_arms: Vec<TokenStream> = variants
         .iter()
-        .map(|v| build_adjacent_newtonsoft_write_arm(v, tag, content, &inner3, &inner4))
+        .map(|v| build_adjacent_newtonsoft_write_arm(v, tag, content, &inner3, &inner4, config))
         .collect();
 
     quote! {
@@ -2031,6 +2246,11 @@ fn build_adjacent_newtonsoft_read_arm(
 ///
 /// Reads the content sub-object via `obj["{content}"]` and extracts each
 /// field from it.
+///
+/// Handles flattened fields by dispatching on [`FlattenKind`]:
+/// - `None`: regular property deserialized from the content sub-object.
+/// - `Struct`: iterates `csharp_fields()` at runtime and inlines each property.
+/// - `HashMap`: skipped (extension data is not read back).
 fn build_adjacent_newtonsoft_read_struct_arm(
     csharp_name: &str,
     json_name: &str,
@@ -2039,34 +2259,15 @@ fn build_adjacent_newtonsoft_read_struct_arm(
     arm_indent: &str,
     prop_indent: &str,
 ) -> TokenStream {
-    let field_exprs: Vec<TokenStream> = fields
-        .iter()
-        .map(|f| {
-            let prop_name = &f.csharp_property_name;
-            let field_json = &f.json_name;
-            let type_expr = &f.type_expr;
-
-            // Inline the content access to avoid a local variable,
-            // which would require a block body invalid in switch expressions.
-            quote! {
-                {
-                    let csharp_type = #type_expr;
-                    format!(
-                        "{prop}{name} = obj[\"{content}\"][\"{json}\"].ToObject<{ty}>(serializer),",
-                        prop = #prop_indent,
-                        name = #prop_name,
-                        content = #content,
-                        json = #field_json,
-                        ty = csharp_type,
-                    )
-                }
-            }
-        })
-        .collect();
+    let read_fmt = format!(
+        "{{indent}}{{name}} = obj[\"{content}\"][\"{{json}}\"].ToObject<{{ty}}>(serializer),"
+    );
+    let field_exprs = build_read_field_exprs(fields, prop_indent, &read_fmt);
 
     quote! {
         {
-            let field_lines: Vec<String> = vec![#(#field_exprs),*];
+            let mut field_lines: Vec<String> = Vec::new();
+            #(#field_exprs)*
             let fields_str = field_lines.join("\n");
             format!(
                 "{arm}\"{json}\" => new {name}\n\
@@ -2094,6 +2295,7 @@ fn build_adjacent_newtonsoft_write_arm(
     content: &str,
     case_indent: &str,
     body_indent: &str,
+    config: &CSharpConfig,
 ) -> TokenStream {
     let json_name = &variant.json_name;
     let csharp_name = &variant.csharp_name;
@@ -2145,6 +2347,7 @@ fn build_adjacent_newtonsoft_write_arm(
             content,
             case_indent,
             body_indent,
+            config,
         ),
     }
 }
@@ -2154,6 +2357,11 @@ fn build_adjacent_newtonsoft_write_arm(
 ///
 /// Writes the tag, then a content property containing a nested object with
 /// the struct fields.
+///
+/// Handles flattened fields by dispatching on [`FlattenKind`]:
+/// - `None`: regular compile-time property write
+/// - `Struct`: runtime iteration over `csharp_fields()` properties
+/// - `HashMap`: skipped (extension data handled by serializer)
 #[expect(
     clippy::too_many_arguments,
     reason = "adjacent tagging needs tag + content keys in addition to standard arm params"
@@ -2167,35 +2375,37 @@ fn build_adjacent_newtonsoft_write_struct_arm(
     content: &str,
     case_indent: &str,
     body_indent: &str,
+    config: &CSharpConfig,
 ) -> TokenStream {
-    let field_lines: Vec<String> = fields
-        .iter()
-        .map(|f| {
-            let json = &f.json_name;
-            let prop = &f.csharp_property_name;
+    let field_exprs = build_write_field_exprs(fields, var_name, body_indent, config);
+
+    quote! {
+        {
+            let mut field_lines: Vec<String> = Vec::new();
+            #(#field_exprs)*
+            let fields_block = field_lines.join("\n");
             format!(
-                "{body_indent}writer.WritePropertyName(\"{json}\");\n\
-                 {body_indent}serializer.Serialize(writer, {var_name}.{prop});",
+                "{case}case {name} {var}:\n\
+                 {body}writer.WriteStartObject();\n\
+                 {body}writer.WritePropertyName(\"{tag}\");\n\
+                 {body}writer.WriteValue(\"{json}\");\n\
+                 {body}writer.WritePropertyName(\"{content}\");\n\
+                 {body}writer.WriteStartObject();\n\
+                 {fields}\n\
+                 {body}writer.WriteEndObject();\n\
+                 {body}writer.WriteEndObject();\n\
+                 {body}break;",
+                case = #case_indent,
+                name = #csharp_name,
+                var = #var_name,
+                body = #body_indent,
+                tag = #tag,
+                json = #json_name,
+                content = #content,
+                fields = fields_block,
             )
-        })
-        .collect();
-
-    let fields_block = field_lines.join("\n");
-
-    let arm = format!(
-        "{case_indent}case {csharp_name} {var_name}:\n\
-         {body_indent}writer.WriteStartObject();\n\
-         {body_indent}writer.WritePropertyName(\"{tag}\");\n\
-         {body_indent}writer.WriteValue(\"{json_name}\");\n\
-         {body_indent}writer.WritePropertyName(\"{content}\");\n\
-         {body_indent}writer.WriteStartObject();\n\
-         {fields_block}\n\
-         {body_indent}writer.WriteEndObject();\n\
-         {body_indent}writer.WriteEndObject();\n\
-         {body_indent}break;",
-    );
-
-    quote! { String::from(#arm) }
+        }
+    }
 }
 
 /// Builds the STJ `JsonConverter<T>` for untagged enums.
@@ -2208,6 +2418,7 @@ fn build_untagged_stj_converter(
     csharp_name: &str,
     variants: &[TaggedVariant],
     base_indent: &str,
+    config: &CSharpConfig,
 ) -> TokenStream {
     let inner = format!("{base_indent}    ");
     let inner2 = format!("{inner}    ");
@@ -2220,7 +2431,7 @@ fn build_untagged_stj_converter(
 
     let write_arms: Vec<TokenStream> = variants
         .iter()
-        .map(|v| build_untagged_stj_write_arm(v, &inner3, &format!("{inner3}    ")))
+        .map(|v| build_untagged_stj_write_arm(v, &inner3, &format!("{inner3}    "), config))
         .collect();
 
     quote! {
@@ -2325,37 +2536,24 @@ fn build_untagged_stj_read_attempt(
 ///
 /// Attempts to extract each field via `root.GetProperty(...)`, constructing
 /// the variant record if all fields are found.
+///
+/// Handles flattened fields by dispatching on [`FlattenKind`]:
+/// - `None`: regular property deserialized from the root element.
+/// - `Struct`: iterates `csharp_fields()` at runtime and inlines each property.
+/// - `HashMap`: skipped (extension data is not read back).
 fn build_untagged_stj_read_struct_attempt(
     csharp_name: &str,
     fields: &[CSharpField],
     attempt_indent: &str,
     body_indent: &str,
 ) -> TokenStream {
-    let field_exprs: Vec<TokenStream> = fields
-        .iter()
-        .map(|f| {
-            let prop_name = &f.csharp_property_name;
-            let field_json = &f.json_name;
-            let type_expr = &f.type_expr;
-
-            quote! {
-                {
-                    let csharp_type = #type_expr;
-                    format!(
-                        "{bi}    {name} = root.GetProperty(\"{json}\").Deserialize<{ty}>(options),",
-                        bi = #body_indent,
-                        name = #prop_name,
-                        json = #field_json,
-                        ty = csharp_type,
-                    )
-                }
-            }
-        })
-        .collect();
+    let read_fmt = "{indent}    {name} = root.GetProperty(\"{json}\").Deserialize<{ty}>(options),";
+    let field_exprs = build_read_field_exprs(fields, body_indent, read_fmt);
 
     quote! {
         {
-            let field_lines: Vec<String> = vec![#(#field_exprs),*];
+            let mut field_lines: Vec<String> = Vec::new();
+            #(#field_exprs)*
             let fields_str = field_lines.join("\n");
             format!(
                 "{ai}try\n\
@@ -2384,6 +2582,7 @@ fn build_untagged_stj_write_arm(
     variant: &TaggedVariant,
     case_indent: &str,
     body_indent: &str,
+    config: &CSharpConfig,
 ) -> TokenStream {
     let csharp_name = &variant.csharp_name;
     let var_name = csharp_safe_var_name(&variant.csharp_name);
@@ -2419,6 +2618,7 @@ fn build_untagged_stj_write_arm(
             fields,
             case_indent,
             body_indent,
+            config,
         ),
     }
 }
@@ -2427,36 +2627,40 @@ fn build_untagged_stj_write_arm(
 ///
 /// Writes a flat object containing just the struct fields, with no
 /// discriminator or wrapping.
+///
+/// Handles flattened fields by dispatching on [`FlattenKind`]:
+/// - `None`: regular compile-time property write
+/// - `Struct`: runtime iteration over `csharp_fields()` properties
+/// - `HashMap`: skipped (extension data handled by serializer)
 fn build_untagged_stj_write_struct_arm(
     csharp_name: &str,
     var_name: &str,
     fields: &[CSharpField],
     case_indent: &str,
     body_indent: &str,
+    config: &CSharpConfig,
 ) -> TokenStream {
-    let field_lines: Vec<String> = fields
-        .iter()
-        .map(|f| {
-            let json = &f.json_name;
-            let prop = &f.csharp_property_name;
+    let field_exprs = build_write_field_exprs(fields, var_name, body_indent, config);
+
+    quote! {
+        {
+            let mut field_lines: Vec<String> = Vec::new();
+            #(#field_exprs)*
+            let fields_block = field_lines.join("\n");
             format!(
-                "{body_indent}writer.WritePropertyName(\"{json}\");\n\
-                 {body_indent}JsonSerializer.Serialize(writer, {var_name}.{prop}, options);",
+                "{case}case {name} {var}:\n\
+                 {body}writer.WriteStartObject();\n\
+                 {fields}\n\
+                 {body}writer.WriteEndObject();\n\
+                 {body}break;",
+                case = #case_indent,
+                name = #csharp_name,
+                var = #var_name,
+                body = #body_indent,
+                fields = fields_block,
             )
-        })
-        .collect();
-
-    let fields_block = field_lines.join("\n");
-
-    let arm = format!(
-        "{case_indent}case {csharp_name} {var_name}:\n\
-         {body_indent}writer.WriteStartObject();\n\
-         {fields_block}\n\
-         {body_indent}writer.WriteEndObject();\n\
-         {body_indent}break;",
-    );
-
-    quote! { String::from(#arm) }
+        }
+    }
 }
 
 /// Builds the Newtonsoft `JsonConverter<T>` for untagged enums.
@@ -2468,6 +2672,7 @@ fn build_untagged_newtonsoft_converter(
     csharp_name: &str,
     variants: &[TaggedVariant],
     base_indent: &str,
+    config: &CSharpConfig,
 ) -> TokenStream {
     let inner = format!("{base_indent}    ");
     let inner2 = format!("{inner}    ");
@@ -2480,7 +2685,7 @@ fn build_untagged_newtonsoft_converter(
 
     let write_arms: Vec<TokenStream> = variants
         .iter()
-        .map(|v| build_untagged_newtonsoft_write_arm(v, &inner3, &format!("{inner3}    ")))
+        .map(|v| build_untagged_newtonsoft_write_arm(v, &inner3, &format!("{inner3}    "), config))
         .collect();
 
     quote! {
@@ -2591,37 +2796,24 @@ fn build_untagged_newtonsoft_read_attempt(
 ///
 /// Casts the token to `JObject` and extracts each field via indexing and
 /// `ToObject<T>(serializer)`.
+///
+/// Handles flattened fields by dispatching on [`FlattenKind`]:
+/// - `None`: regular property deserialized from the `JObject`.
+/// - `Struct`: iterates `csharp_fields()` at runtime and inlines each property.
+/// - `HashMap`: skipped (extension data is not read back).
 fn build_untagged_newtonsoft_read_struct_attempt(
     csharp_name: &str,
     fields: &[CSharpField],
     attempt_indent: &str,
     body_indent: &str,
 ) -> TokenStream {
-    let field_exprs: Vec<TokenStream> = fields
-        .iter()
-        .map(|f| {
-            let prop_name = &f.csharp_property_name;
-            let field_json = &f.json_name;
-            let type_expr = &f.type_expr;
-
-            quote! {
-                {
-                    let csharp_type = #type_expr;
-                    format!(
-                        "{bi}    {name} = obj[\"{json}\"].ToObject<{ty}>(serializer),",
-                        bi = #body_indent,
-                        name = #prop_name,
-                        json = #field_json,
-                        ty = csharp_type,
-                    )
-                }
-            }
-        })
-        .collect();
+    let read_fmt = "{indent}    {name} = obj[\"{json}\"].ToObject<{ty}>(serializer),";
+    let field_exprs = build_read_field_exprs(fields, body_indent, read_fmt);
 
     quote! {
         {
-            let field_lines: Vec<String> = vec![#(#field_exprs),*];
+            let mut field_lines: Vec<String> = Vec::new();
+            #(#field_exprs)*
             let fields_str = field_lines.join("\n");
             format!(
                 "{ai}try\n\
@@ -2651,6 +2843,7 @@ fn build_untagged_newtonsoft_write_arm(
     variant: &TaggedVariant,
     case_indent: &str,
     body_indent: &str,
+    config: &CSharpConfig,
 ) -> TokenStream {
     let csharp_name = &variant.csharp_name;
     let var_name = csharp_safe_var_name(&variant.csharp_name);
@@ -2686,6 +2879,7 @@ fn build_untagged_newtonsoft_write_arm(
             fields,
             case_indent,
             body_indent,
+            config,
         ),
     }
 }
@@ -2694,36 +2888,40 @@ fn build_untagged_newtonsoft_write_arm(
 ///
 /// Writes a flat object containing just the struct fields, with no
 /// discriminator or wrapping.
+///
+/// Handles flattened fields by dispatching on [`FlattenKind`]:
+/// - `None`: regular compile-time property write
+/// - `Struct`: runtime iteration over `csharp_fields()` properties
+/// - `HashMap`: skipped (extension data handled by serializer)
 fn build_untagged_newtonsoft_write_struct_arm(
     csharp_name: &str,
     var_name: &str,
     fields: &[CSharpField],
     case_indent: &str,
     body_indent: &str,
+    config: &CSharpConfig,
 ) -> TokenStream {
-    let field_lines: Vec<String> = fields
-        .iter()
-        .map(|f| {
-            let json = &f.json_name;
-            let prop = &f.csharp_property_name;
+    let field_exprs = build_write_field_exprs(fields, var_name, body_indent, config);
+
+    quote! {
+        {
+            let mut field_lines: Vec<String> = Vec::new();
+            #(#field_exprs)*
+            let fields_block = field_lines.join("\n");
             format!(
-                "{body_indent}writer.WritePropertyName(\"{json}\");\n\
-                 {body_indent}serializer.Serialize(writer, {var_name}.{prop});",
+                "{case}case {name} {var}:\n\
+                 {body}writer.WriteStartObject();\n\
+                 {fields}\n\
+                 {body}writer.WriteEndObject();\n\
+                 {body}break;",
+                case = #case_indent,
+                name = #csharp_name,
+                var = #var_name,
+                body = #body_indent,
+                fields = fields_block,
             )
-        })
-        .collect();
-
-    let fields_block = field_lines.join("\n");
-
-    let arm = format!(
-        "{case_indent}case {csharp_name} {var_name}:\n\
-         {body_indent}writer.WriteStartObject();\n\
-         {fields_block}\n\
-         {body_indent}writer.WriteEndObject();\n\
-         {body_indent}break;",
-    );
-
-    quote! { String::from(#arm) }
+        }
+    }
 }
 
 /// Builds the final token stream for file-scoped namespace output (C# 10+).
@@ -2739,6 +2937,7 @@ fn build_file_scoped(
     indent: &str,
     variant_exprs: &[TokenStream],
     converter_expr: Option<&TokenStream>,
+    has_hashmap_flatten: bool,
     nullable_checks: &[TokenStream],
 ) -> TokenStream {
     let converter_append = build_converter_append(converter_expr);
@@ -2760,7 +2959,7 @@ fn build_file_scoped(
             };
 
             let nullable_checks: Vec<bool> = vec![#(#nullable_checks),*];
-            let nullable_directive = if nullable_checks.iter().any(|&x| x) {
+            let nullable_directive = if #has_hashmap_flatten || nullable_checks.iter().any(|&x| x) {
                 "#nullable enable\n"
             } else {
                 ""
@@ -2800,6 +2999,7 @@ fn build_block_scoped(
     indent: &str,
     variant_exprs: &[TokenStream],
     converter_expr: Option<&TokenStream>,
+    has_hashmap_flatten: bool,
     nullable_checks: &[TokenStream],
 ) -> TokenStream {
     let converter_append = build_converter_append(converter_expr);
@@ -2821,7 +3021,7 @@ fn build_block_scoped(
             };
 
             let nullable_checks: Vec<bool> = vec![#(#nullable_checks),*];
-            let nullable_directive = if nullable_checks.iter().any(|&x| x) {
+            let nullable_directive = if #has_hashmap_flatten || nullable_checks.iter().any(|&x| x) {
                 "#nullable enable\n"
             } else {
                 ""

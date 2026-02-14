@@ -1,4 +1,4 @@
-// Rust guideline compliant 2026-02-10
+// Rust guideline compliant 2026-02-14
 //! Generate C# type definitions from Rust structs and enums.
 //!
 //! `csharp-rs` provides a derive macro that generates C# class, record,
@@ -27,6 +27,29 @@ use std::path::Path;
 #[doc(inline)]
 pub use csharp_rs_macros::CSharp;
 
+/// Metadata for a C# field, used by `#[serde(flatten)]` to inline properties.
+#[derive(Debug, Clone)]
+pub enum CSharpFieldInfo {
+    /// A regular property to inline into the parent record.
+    Property {
+        /// C# property name (`PascalCase`).
+        property_name: String,
+        /// JSON serialization key.
+        json_name: String,
+        /// Resolved C# type name (e.g. `"string"`, `"int"`).
+        type_name: String,
+        /// Whether the field is nullable.
+        is_optional: bool,
+    },
+    /// An extension data container (from flattened `HashMap`).
+    ExtensionData {
+        /// C# key type name (typically `"string"`).
+        key_type_name: String,
+        /// C# value type name.
+        value_type_name: String,
+    },
+}
+
 /// Generates a C# type definition as a string.
 ///
 /// Implementors produce a complete `.cs` file content including
@@ -40,6 +63,15 @@ pub trait CSharp {
 
     /// Returns type names that this definition depends on.
     fn dependencies() -> Vec<String>;
+
+    /// Returns field metadata for property inlining via `#[serde(flatten)]`.
+    ///
+    /// Only meaningful for struct types. Primitives, generics, and enums
+    /// return an empty vec (the default implementation).
+    #[must_use]
+    fn csharp_fields() -> Vec<CSharpFieldInfo> {
+        Vec::new()
+    }
 }
 
 /// Writes the C# definition of `T` to `path`.
@@ -300,6 +332,23 @@ mod tests {
     fn hashset_dependencies_contains_inner() {
         let deps = <HashSet<String>>::dependencies();
         assert_eq!(deps, vec!["string"]);
+    }
+
+    // --- csharp_fields coverage ---
+
+    #[test]
+    fn primitive_csharp_fields_is_empty() {
+        assert!(String::csharp_fields().is_empty());
+        assert!(i32::csharp_fields().is_empty());
+        assert!(bool::csharp_fields().is_empty());
+    }
+
+    #[test]
+    fn generic_csharp_fields_is_empty() {
+        assert!(<Vec<String>>::csharp_fields().is_empty());
+        assert!(<Option<i32>>::csharp_fields().is_empty());
+        assert!(<HashMap<String, i32>>::csharp_fields().is_empty());
+        assert!(<HashSet<String>>::csharp_fields().is_empty());
     }
 
     // --- export_to coverage ---

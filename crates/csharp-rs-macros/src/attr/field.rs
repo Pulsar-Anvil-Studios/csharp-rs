@@ -1,4 +1,4 @@
-// Rust guideline compliant 2026-02-10
+// Rust guideline compliant 2026-02-14
 //! Field-level attribute parsing for `#[serde(...)]`.
 //!
 //! Supports `#[serde(rename = "...")]`, `#[serde(skip)]`,
@@ -16,6 +16,8 @@ pub struct FieldAttr {
     /// Field may be absent in JSON (`serde(skip_serializing_if = "...")`),
     /// rendered as nullable (`T?`) in C#.
     pub skip_serializing_if: bool,
+    /// Field is flattened into the parent (`serde(flatten)`).
+    pub flatten: bool,
 }
 
 impl FieldAttr {
@@ -48,6 +50,7 @@ impl FieldAttr {
                     }
                 }
                 Some("skip" | "skip_serializing") => self.skip = true,
+                Some("flatten") => self.flatten = true,
                 Some("skip_serializing_if") => {
                     // Consume the value (predicate path) but only track the flag.
                     let value = meta.value()?;
@@ -135,5 +138,21 @@ mod tests {
         assert!(field_attr.rename.is_none());
         assert!(!field_attr.skip);
         assert!(!field_attr.skip_serializing_if);
+    }
+
+    #[test]
+    fn parse_serde_flatten() {
+        let attrs: Vec<Attribute> = vec![parse_quote!(#[serde(flatten)])];
+        let field_attr = FieldAttr::from_attrs(&attrs).unwrap();
+        assert!(field_attr.flatten);
+        assert!(!field_attr.skip);
+    }
+
+    #[test]
+    fn flatten_and_skip_both_set() {
+        let attrs: Vec<Attribute> = vec![parse_quote!(#[serde(flatten, skip)])];
+        let field_attr = FieldAttr::from_attrs(&attrs).unwrap();
+        assert!(field_attr.flatten);
+        assert!(field_attr.skip);
     }
 }

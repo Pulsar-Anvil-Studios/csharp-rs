@@ -3,7 +3,7 @@
 
 #![expect(dead_code, reason = "test enums are only used via derive macro")]
 
-use csharp_rs::CSharp;
+use csharp_rs::{CSharp, Config};
 
 // --- internally tagged: struct + unit variants ---
 
@@ -16,7 +16,8 @@ enum Message {
 
 #[test]
 fn internally_tagged_has_abstract_record() {
-    let def = Message::csharp_definition();
+    let cfg = Config::default();
+    let def = Message::csharp_definition(&cfg);
     assert!(
         def.contains("public abstract record Message"),
         "missing abstract record:\n{def}"
@@ -25,7 +26,8 @@ fn internally_tagged_has_abstract_record() {
 
 #[test]
 fn internally_tagged_has_derived_records() {
-    let def = Message::csharp_definition();
+    let cfg = Config::default();
+    let def = Message::csharp_definition(&cfg);
     assert!(
         def.contains("sealed record Request : Message"),
         "missing sealed record Request:\n{def}"
@@ -38,7 +40,8 @@ fn internally_tagged_has_derived_records() {
 
 #[test]
 fn internally_tagged_has_converter() {
-    let def = Message::csharp_definition();
+    let cfg = Config::default();
+    let def = Message::csharp_definition(&cfg);
     assert!(
         def.contains("MessageConverter"),
         "missing MessageConverter (C# 9 uses converter path):\n{def}"
@@ -51,7 +54,8 @@ fn internally_tagged_has_converter() {
 
 #[test]
 fn internally_tagged_request_has_properties() {
-    let def = Message::csharp_definition();
+    let cfg = Config::default();
+    let def = Message::csharp_definition(&cfg);
     assert!(
         def.contains("[JsonPropertyName(\"id\")]"),
         "missing JsonPropertyName for id:\n{def}"
@@ -82,7 +86,8 @@ enum Value {
 
 #[test]
 fn internally_tagged_newtype_has_value_property() {
-    let def = Value::csharp_definition();
+    let cfg = Config::default();
+    let def = Value::csharp_definition(&cfg);
     assert!(
         def.contains("public string Value { get; init; }"),
         "Text variant should have string Value property:\n{def}"
@@ -95,7 +100,8 @@ fn internally_tagged_newtype_has_value_property() {
 
 #[test]
 fn internally_tagged_unit_has_no_properties() {
-    let def = Value::csharp_definition();
+    let cfg = Config::default();
+    let def = Value::csharp_definition(&cfg);
     assert!(
         def.contains("sealed record Null : Value;"),
         "Null should be a semicolon record with no body:\n{def}"
@@ -113,7 +119,8 @@ enum Event {
 
 #[test]
 fn internally_tagged_rename_all_variant_names() {
-    let def = Event::csharp_definition();
+    let cfg = Config::default();
+    let def = Event::csharp_definition(&cfg);
     // Discriminator values (JSON names) should be camelCase.
     assert!(
         def.contains("\"userLogin\""),
@@ -136,7 +143,8 @@ enum Shape {
 
 #[test]
 fn externally_tagged_has_abstract_record() {
-    let def = Shape::csharp_definition();
+    let cfg = Config::default();
+    let def = Shape::csharp_definition(&cfg);
     assert!(
         def.contains("public abstract record Shape"),
         "missing abstract record Shape:\n{def}"
@@ -145,7 +153,8 @@ fn externally_tagged_has_abstract_record() {
 
 #[test]
 fn externally_tagged_has_converter() {
-    let def = Shape::csharp_definition();
+    let cfg = Config::default();
+    let def = Shape::csharp_definition(&cfg);
     assert!(
         def.contains("ShapeConverter"),
         "missing ShapeConverter:\n{def}"
@@ -158,7 +167,8 @@ fn externally_tagged_has_converter() {
 
 #[test]
 fn externally_tagged_has_variant_records() {
-    let def = Shape::csharp_definition();
+    let cfg = Config::default();
+    let def = Shape::csharp_definition(&cfg);
     assert!(
         def.contains("sealed record Circle : Shape"),
         "missing Circle variant record:\n{def}"
@@ -185,7 +195,8 @@ enum Block {
 
 #[test]
 fn adjacently_tagged_has_converter() {
-    let def = Block::csharp_definition();
+    let cfg = Config::default();
+    let def = Block::csharp_definition(&cfg);
     assert!(
         def.contains("BlockConverter"),
         "missing BlockConverter:\n{def}"
@@ -198,7 +209,8 @@ fn adjacently_tagged_has_converter() {
 
 #[test]
 fn adjacently_tagged_has_abstract_record() {
-    let def = Block::csharp_definition();
+    let cfg = Config::default();
+    let def = Block::csharp_definition(&cfg);
     assert!(
         def.contains("public abstract record Block"),
         "missing abstract record Block:\n{def}"
@@ -216,7 +228,8 @@ enum Data {
 
 #[test]
 fn untagged_has_converter() {
-    let def = Data::csharp_definition();
+    let cfg = Config::default();
+    let def = Data::csharp_definition(&cfg);
     assert!(
         def.contains("DataConverter"),
         "missing DataConverter:\n{def}"
@@ -229,7 +242,8 @@ fn untagged_has_converter() {
 
 #[test]
 fn untagged_has_abstract_record() {
-    let def = Data::csharp_definition();
+    let cfg = Config::default();
+    let def = Data::csharp_definition(&cfg);
     assert!(
         def.contains("public abstract record Data"),
         "missing abstract record Data:\n{def}"
@@ -248,7 +262,8 @@ enum Packet {
 
 #[test]
 fn tagged_namespace_override() {
-    let def = Packet::csharp_definition();
+    let cfg = Config::default();
+    let def = Packet::csharp_definition(&cfg);
     assert!(
         def.contains("namespace Game.Network"),
         "missing namespace override:\n{def}"
@@ -259,7 +274,8 @@ fn tagged_namespace_override() {
 
 #[test]
 fn tagged_enum_dependencies() {
-    let deps = Message::dependencies();
+    let cfg = Config::default();
+    let deps = Message::dependencies(&cfg);
     // Message has Request { id: String, method: String } and Quit (unit).
     // Dependencies should include "string" from the struct variant fields.
     assert!(
@@ -287,7 +303,8 @@ enum Action {
 
 #[test]
 fn tagged_per_variant_rename() {
-    let def = Action::csharp_definition();
+    let cfg = Config::default();
+    let def = Action::csharp_definition(&cfg);
     // The discriminator value for Click should be "CLICK" (from serde(rename)).
     assert!(
         def.contains("\"CLICK\""),
@@ -297,7 +314,8 @@ fn tagged_per_variant_rename() {
 
 #[test]
 fn tagged_skip_variant() {
-    let def = Action::csharp_definition();
+    let cfg = Config::default();
+    let def = Action::csharp_definition(&cfg);
     assert!(
         !def.contains("Internal"),
         "Internal variant should be skipped:\n{def}"
@@ -317,7 +335,8 @@ fn tagged_skip_variant() {
 
 #[test]
 fn tagged_enum_has_auto_generated_comment() {
-    let def = Message::csharp_definition();
+    let cfg = Config::default();
+    let def = Message::csharp_definition(&cfg);
     assert!(
         def.starts_with("// <auto-generated/>"),
         "missing auto-generated comment:\n{def}"
@@ -326,7 +345,8 @@ fn tagged_enum_has_auto_generated_comment() {
 
 #[test]
 fn tagged_enum_has_using_directives() {
-    let def = Message::csharp_definition();
+    let cfg = Config::default();
+    let def = Message::csharp_definition(&cfg);
     // C# 9 + STJ converter path requires System, System.Text.Json, and
     // System.Text.Json.Serialization.
     assert!(
@@ -345,7 +365,8 @@ fn tagged_enum_has_using_directives() {
 
 #[test]
 fn tagged_enum_default_namespace() {
-    let def = Message::csharp_definition();
+    let cfg = Config::default();
+    let def = Message::csharp_definition(&cfg);
     assert!(
         def.contains("namespace Generated"),
         "missing default namespace:\n{def}"
@@ -356,7 +377,8 @@ fn tagged_enum_default_namespace() {
 
 #[test]
 fn internally_tagged_rename_all_field_names() {
-    let def = Event::csharp_definition();
+    let cfg = Config::default();
+    let def = Event::csharp_definition(&cfg);
     // user_id with camelCase rename_all should have JSON name "userId".
     assert!(
         def.contains("[JsonPropertyName(\"userId\")]"),
@@ -373,7 +395,8 @@ fn internally_tagged_rename_all_field_names() {
 
 #[test]
 fn externally_tagged_circle_has_radius_property() {
-    let def = Shape::csharp_definition();
+    let cfg = Config::default();
+    let def = Shape::csharp_definition(&cfg);
     assert!(
         def.contains("[JsonPropertyName(\"radius\")]"),
         "Circle should have JsonPropertyName for radius:\n{def}"
@@ -386,7 +409,8 @@ fn externally_tagged_circle_has_radius_property() {
 
 #[test]
 fn externally_tagged_point_has_value_property() {
-    let def = Shape::csharp_definition();
+    let cfg = Config::default();
+    let def = Shape::csharp_definition(&cfg);
     assert!(
         def.contains("sealed record Point : Shape"),
         "Point should be a sealed record:\n{def}"
@@ -402,7 +426,8 @@ fn externally_tagged_point_has_value_property() {
 
 #[test]
 fn adjacently_tagged_paragraph_has_text_property() {
-    let def = Block::csharp_definition();
+    let cfg = Config::default();
+    let def = Block::csharp_definition(&cfg);
     assert!(
         def.contains("[JsonPropertyName(\"text\")]"),
         "Paragraph should have JsonPropertyName for text:\n{def}"
@@ -415,7 +440,8 @@ fn adjacently_tagged_paragraph_has_text_property() {
 
 #[test]
 fn adjacently_tagged_unit_has_no_body() {
-    let def = Block::csharp_definition();
+    let cfg = Config::default();
+    let def = Block::csharp_definition(&cfg);
     assert!(
         def.contains("sealed record Break : Block;"),
         "Break should be a semicolon record with no body:\n{def}"
@@ -426,7 +452,8 @@ fn adjacently_tagged_unit_has_no_body() {
 
 #[test]
 fn untagged_has_variant_records() {
-    let def = Data::csharp_definition();
+    let cfg = Config::default();
+    let def = Data::csharp_definition(&cfg);
     assert!(
         def.contains("sealed record Text : Data"),
         "missing Text variant record:\n{def}"
@@ -439,7 +466,8 @@ fn untagged_has_variant_records() {
 
 #[test]
 fn untagged_object_has_properties() {
-    let def = Data::csharp_definition();
+    let cfg = Config::default();
+    let def = Data::csharp_definition(&cfg);
     assert!(
         def.contains("[JsonPropertyName(\"key\")]"),
         "Object should have JsonPropertyName for key:\n{def}"

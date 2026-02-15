@@ -8,7 +8,6 @@ use crate::attr::container::ContainerAttr;
 use crate::attr::field::FieldAttr;
 use crate::attr::from_pascal_to_snake;
 use crate::attr::to_pascal_case;
-use crate::config::{CSharpConfig, CSharpNamespace};
 use crate::types::named::{analyze_type, extract_hashmap_types, type_to_token_expr};
 use crate::types::{
     CSharpField, DerivedCSharp, DerivedCSharpKind, EnumTagging, FlattenKind, TaggedVariant,
@@ -76,7 +75,7 @@ fn process_struct_fields(
                 result.push(CSharpField {
                     csharp_property_name: String::new(),
                     json_name: String::new(),
-                    type_expr: quote::quote! { <#ty as csharp_rs::CSharp>::csharp_fields() },
+                    type_expr: quote::quote! { <#ty as csharp_rs::CSharp>::csharp_fields(cfg) },
                     is_optional: false,
                     flatten: FlattenKind::Struct,
                 });
@@ -134,17 +133,12 @@ pub fn tagged_enum(
     input: &DeriveInput,
     enum_data: &DataEnum,
     container: &ContainerAttr,
-    config: &CSharpConfig,
 ) -> syn::Result<DerivedCSharp> {
     let rust_ident = input.ident.clone();
     // Use the Rust ident directly; enum names are already PascalCase by convention.
     let csharp_name = rust_ident.to_string();
 
-    let namespace = match &container.namespace {
-        Some(ns) => CSharpNamespace::new(ns.as_str())
-            .expect("namespace was validated in ContainerAttr::parse_csharp"),
-        None => config.namespace.clone(),
-    };
+    let namespace_override = container.namespace.clone();
 
     let tagging = resolve_tagging(container, input.ident.span())?;
 
@@ -204,7 +198,7 @@ pub fn tagged_enum(
     Ok(DerivedCSharp {
         rust_ident,
         csharp_name,
-        namespace,
+        namespace_override,
         kind: DerivedCSharpKind::TaggedEnum { tagging, variants },
         export: container.export,
         export_to: container.export_to.clone(),
@@ -216,16 +210,12 @@ mod tests {
     use super::*;
     use syn::parse_quote;
 
-    fn default_config() -> CSharpConfig {
-        CSharpConfig::default()
-    }
-
     fn process(input: &DeriveInput) -> DerivedCSharp {
         let container = ContainerAttr::from_attrs(&input.attrs).unwrap();
         let syn::Data::Enum(ref enum_data) = input.data else {
             panic!("expected enum")
         };
-        tagged_enum(input, enum_data, &container, &default_config()).unwrap()
+        tagged_enum(input, enum_data, &container).unwrap()
     }
 
     fn extract_variants(ir: &DerivedCSharp) -> (&EnumTagging, &[TaggedVariant]) {
@@ -351,7 +341,7 @@ mod tests {
         let syn::Data::Enum(ref enum_data) = input.data else {
             panic!("expected enum")
         };
-        let result = tagged_enum(&input, enum_data, &container, &default_config());
+        let result = tagged_enum(&input, enum_data, &container);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("tuple variants"));
     }
@@ -368,7 +358,7 @@ mod tests {
         let syn::Data::Enum(ref enum_data) = input.data else {
             panic!("expected enum")
         };
-        let result = tagged_enum(&input, enum_data, &container, &default_config());
+        let result = tagged_enum(&input, enum_data, &container);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("content"));
     }
@@ -469,7 +459,6 @@ mod tests {
                 _ => panic!("expected enum"),
             },
             &ContainerAttr::from_attrs(&input.attrs).unwrap(),
-            &CSharpConfig::default(),
         )
         .unwrap();
 

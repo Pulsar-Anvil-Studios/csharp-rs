@@ -17,7 +17,7 @@ use quote::quote;
 /// - **C# 11+**: `required` modifier on non-optional properties.
 pub fn build_record_definition(
     csharp_name: &str,
-    namespace: &str,
+    ns_expr: &TokenStream,
     fields: &[CSharpField],
     config: &CSharpConfig,
 ) -> TokenStream {
@@ -60,7 +60,7 @@ pub fn build_record_definition(
         build_file_scoped(
             using_directive,
             extra_using,
-            namespace,
+            ns_expr,
             csharp_name,
             &field_exprs,
             &nullable_checks,
@@ -70,7 +70,7 @@ pub fn build_record_definition(
         build_block_scoped(
             using_directive,
             extra_using,
-            namespace,
+            ns_expr,
             csharp_name,
             &field_exprs,
             &nullable_checks,
@@ -183,7 +183,7 @@ fn build_field_exprs(
 fn build_file_scoped(
     using_directive: &str,
     extra_using: &str,
-    namespace: &str,
+    ns_expr: &TokenStream,
     csharp_name: &str,
     field_exprs: &[TokenStream],
     nullable_checks: &[TokenStream],
@@ -191,6 +191,7 @@ fn build_file_scoped(
 ) -> TokenStream {
     quote! {
         {
+            let ns: &str = #ns_expr;
             let mut fields = String::new();
             let mut field_parts: Vec<String> = Vec::new();
             #(#field_exprs)*
@@ -222,7 +223,7 @@ fn build_file_scoped(
                 nullable = nullable_directive,
                 using = #using_directive,
                 extra_using = #extra_using,
-                ns = #namespace,
+                ns = ns,
                 name = #csharp_name,
                 fields = fields,
             )
@@ -234,7 +235,7 @@ fn build_file_scoped(
 fn build_block_scoped(
     using_directive: &str,
     extra_using: &str,
-    namespace: &str,
+    ns_expr: &TokenStream,
     csharp_name: &str,
     field_exprs: &[TokenStream],
     nullable_checks: &[TokenStream],
@@ -242,6 +243,7 @@ fn build_block_scoped(
 ) -> TokenStream {
     quote! {
         {
+            let ns: &str = #ns_expr;
             let mut fields = String::new();
             let mut field_parts: Vec<String> = Vec::new();
             #(#field_exprs)*
@@ -274,7 +276,7 @@ fn build_block_scoped(
                 nullable = nullable_directive,
                 using = #using_directive,
                 extra_using = #extra_using,
-                ns = #namespace,
+                ns = ns,
                 name = #csharp_name,
                 fields = fields,
             )

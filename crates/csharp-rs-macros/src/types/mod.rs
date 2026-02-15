@@ -9,7 +9,6 @@ pub mod simple_enum;
 pub mod tagged_enum;
 
 use crate::attr::container::ContainerAttr;
-use crate::config::{CSharpConfig, CSharpNamespace};
 use proc_macro2::{Ident, TokenStream};
 use syn::{Data, DataStruct, DeriveInput, Fields};
 
@@ -129,8 +128,9 @@ pub struct DerivedCSharp {
     pub rust_ident: Ident,
     /// The C# type name.
     pub csharp_name: String,
-    /// C# namespace (from config or attribute override).
-    pub namespace: CSharpNamespace,
+    /// Per-type namespace override from `#[csharp(namespace = "...")]`.
+    /// When `None`, the generated code falls back to `cfg.namespace()`.
+    pub namespace_override: Option<String>,
     /// The kind of C# type and its contents.
     pub kind: DerivedCSharpKind,
     /// Whether to generate an export test.
@@ -144,14 +144,14 @@ pub struct DerivedCSharp {
 /// # Errors
 ///
 /// Returns a `syn::Error` for unsupported data structures.
-pub fn process_input(input: &DeriveInput, config: &CSharpConfig) -> syn::Result<DerivedCSharp> {
+pub fn process_input(input: &DeriveInput) -> syn::Result<DerivedCSharp> {
     let container = ContainerAttr::from_attrs(&input.attrs)?;
 
     match &input.data {
         Data::Struct(DataStruct {
             fields: Fields::Named(named),
             ..
-        }) => named::named_struct(input, named, &container, config),
+        }) => named::named_struct(input, named, &container),
 
         Data::Struct(DataStruct {
             fields: Fields::Unnamed(_),
@@ -175,9 +175,9 @@ pub fn process_input(input: &DeriveInput, config: &CSharpConfig) -> syn::Result<
                 container.tag.is_some() || container.content.is_some() || container.untagged;
 
             if has_data_variants || has_explicit_tagging {
-                tagged_enum::tagged_enum(input, enum_data, &container, config)
+                tagged_enum::tagged_enum(input, enum_data, &container)
             } else {
-                simple_enum::simple_enum(input, enum_data, &container, config)
+                simple_enum::simple_enum(input, enum_data, &container)
             }
         }
 
@@ -193,10 +193,6 @@ mod tests {
     use super::*;
     use syn::parse_quote;
 
-    fn default_config() -> CSharpConfig {
-        CSharpConfig::default()
-    }
-
     #[test]
     fn named_struct_succeeds() {
         let input: DeriveInput = parse_quote! {
@@ -204,7 +200,7 @@ mod tests {
                 bar: String,
             }
         };
-        let result = process_input(&input, &default_config());
+        let result = process_input(&input);
         assert!(result.is_ok());
         let ir = result.unwrap();
         assert_eq!(ir.csharp_name, "Foo");
@@ -219,7 +215,7 @@ mod tests {
         let input: DeriveInput = parse_quote! {
             struct Wrapper(String);
         };
-        let result = process_input(&input, &default_config());
+        let result = process_input(&input);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
@@ -233,7 +229,7 @@ mod tests {
         let input: DeriveInput = parse_quote! {
             struct Unit;
         };
-        let result = process_input(&input, &default_config());
+        let result = process_input(&input);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
@@ -251,7 +247,7 @@ mod tests {
                 Blue,
             }
         };
-        let result = process_input(&input, &default_config());
+        let result = process_input(&input);
         assert!(result.is_ok());
         let ir = result.unwrap();
         assert_eq!(ir.csharp_name, "Color");
@@ -270,7 +266,7 @@ mod tests {
                 Quit,
             }
         };
-        let result = process_input(&input, &default_config());
+        let result = process_input(&input);
         assert!(result.is_ok());
         let ir = result.unwrap();
         assert_eq!(ir.csharp_name, "Message");
@@ -285,7 +281,7 @@ mod tests {
                 Quit,
             }
         };
-        let result = process_input(&input, &default_config());
+        let result = process_input(&input);
         assert!(result.is_ok());
         match &result.unwrap().kind {
             DerivedCSharpKind::TaggedEnum { tagging, .. } => {
@@ -303,7 +299,7 @@ mod tests {
                 Data(String, i32),
             }
         };
-        let result = process_input(&input, &default_config());
+        let result = process_input(&input);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
@@ -320,7 +316,7 @@ mod tests {
                 f: f32,
             }
         };
-        let result = process_input(&input, &default_config());
+        let result = process_input(&input);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
@@ -338,7 +334,7 @@ mod tests {
                 Inactive,
             }
         };
-        let result = process_input(&input, &default_config());
+        let result = process_input(&input);
         assert!(result.is_ok());
         assert!(matches!(
             result.unwrap().kind,
@@ -354,7 +350,7 @@ mod tests {
                 Green,
             }
         };
-        let result = process_input(&input, &default_config());
+        let result = process_input(&input);
         assert!(result.is_ok());
         assert!(matches!(result.unwrap().kind, DerivedCSharpKind::Enum(_)));
     }

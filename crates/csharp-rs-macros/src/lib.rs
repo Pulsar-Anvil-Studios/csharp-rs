@@ -37,7 +37,7 @@ pub fn derive_csharp(input: TokenStream) -> TokenStream {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| String::from("."));
     let config = CSharpConfig::from_manifest_dir(std::path::Path::new(&manifest_dir));
 
-    match types::process_input(&input, &config) {
+    match types::process_input(&input) {
         Ok(derived) => derived.into_token_stream(&config).into(),
         Err(err) => err.to_compile_error().into(),
     }

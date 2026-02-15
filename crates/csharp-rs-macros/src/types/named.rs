@@ -8,7 +8,6 @@
 use crate::attr::container::ContainerAttr;
 use crate::attr::field::FieldAttr;
 use crate::attr::to_pascal_case;
-use crate::config::{CSharpConfig, CSharpNamespace};
 use crate::types::{CSharpField, DerivedCSharp, DerivedCSharpKind, FlattenKind};
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -23,19 +22,13 @@ pub fn named_struct(
     input: &DeriveInput,
     named: &FieldsNamed,
     container: &ContainerAttr,
-    config: &CSharpConfig,
 ) -> syn::Result<DerivedCSharp> {
     let rust_ident = input.ident.clone();
     // Use the Rust ident directly; struct names are already PascalCase by convention.
     let csharp_name = rust_ident.to_string();
 
-    // Namespace: use container override if present, otherwise config default.
-    // ContainerAttr::parse_csharp already validated the namespace string.
-    let namespace = match &container.namespace {
-        Some(ns) => CSharpNamespace::new(ns.as_str())
-            .expect("namespace was validated in ContainerAttr::parse_csharp"),
-        None => config.namespace.clone(),
-    };
+    // Namespace: store only the per-type override; runtime config provides the default.
+    let namespace_override = container.namespace.clone();
 
     let mut fields = Vec::new();
 
@@ -67,7 +60,7 @@ pub fn named_struct(
                 fields.push(CSharpField {
                     csharp_property_name: String::new(),
                     json_name: String::new(),
-                    type_expr: quote! { <#ty as csharp_rs::CSharp>::csharp_fields() },
+                    type_expr: quote! { <#ty as csharp_rs::CSharp>::csharp_fields(cfg) },
                     is_optional: false,
                     flatten: FlattenKind::Struct,
                 });
@@ -110,7 +103,7 @@ pub fn named_struct(
     Ok(DerivedCSharp {
         rust_ident,
         csharp_name,
-        namespace,
+        namespace_override,
         kind: DerivedCSharpKind::Record(fields),
         export: container.export,
         export_to: container.export_to.clone(),
@@ -133,7 +126,7 @@ pub(crate) fn analyze_type(ty: &Type) -> (bool, TokenStream) {
 
 /// Generates a token expression that resolves to the C# type name.
 pub(crate) fn type_to_token_expr(ty: &Type) -> TokenStream {
-    quote! { <#ty as csharp_rs::CSharp>::csharp_name() }
+    quote! { <#ty as csharp_rs::CSharp>::csharp_name(cfg) }
 }
 
 /// Extracts the inner type `T` from `Option<T>`, if the type is `Option`.
@@ -197,10 +190,6 @@ mod tests {
     use super::*;
     use syn::parse_quote;
 
-    fn default_config() -> CSharpConfig {
-        CSharpConfig::default()
-    }
-
     fn process_named(input: &DeriveInput) -> DerivedCSharp {
         let container = ContainerAttr::from_attrs(&input.attrs).unwrap();
         let syn::Data::Struct(syn::DataStruct {
@@ -210,7 +199,7 @@ mod tests {
         else {
             panic!("expected named struct");
         };
-        named_struct(input, named, &container, &default_config()).unwrap()
+        named_struct(input, named, &container).unwrap()
     }
 
     fn extract_fields(ir: &DerivedCSharp) -> &[CSharpField] {
@@ -296,7 +285,7 @@ mod tests {
             }
         };
         let ir = process_named(&input);
-        assert_eq!(ir.namespace.as_ref(), "Custom.Namespace");
+        assert_eq!(ir.namespace_override.as_deref(), Some("Custom.Namespace"));
     }
 
     #[test]

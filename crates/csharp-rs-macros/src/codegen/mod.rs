@@ -62,19 +62,20 @@ impl DerivedCSharp {
 
         quote! {
             impl csharp_rs::CSharp for #ident {
-                fn csharp_name() -> String {
+                fn csharp_name(cfg: &csharp_rs::Config) -> String {
+                    let _ = cfg;
                     String::from(#csharp_name)
                 }
 
-                fn csharp_definition() -> String {
+                fn csharp_definition(cfg: &csharp_rs::Config) -> String {
                     #definition_body
                 }
 
-                fn dependencies() -> Vec<String> {
+                fn dependencies(cfg: &csharp_rs::Config) -> Vec<String> {
                     #dependencies_body
                 }
 
-                fn csharp_fields() -> Vec<csharp_rs::CSharpFieldInfo> {
+                fn csharp_fields(cfg: &csharp_rs::Config) -> Vec<csharp_rs::CSharpFieldInfo> {
                     #csharp_fields_body
                 }
             }
@@ -85,20 +86,25 @@ impl DerivedCSharp {
 
     /// Builds the `csharp_definition()` body that returns a complete `.cs` file.
     fn build_definition(&self, config: &CSharpConfig) -> TokenStream {
-        let namespace: &str = self.namespace.as_ref();
+        // Namespace is resolved at runtime: per-type override or cfg.namespace().
+        let ns_expr = if let Some(ns) = &self.namespace_override {
+            quote! { #ns }
+        } else {
+            quote! { cfg.namespace() }
+        };
         let csharp_name = &self.csharp_name;
 
         match &self.kind {
             DerivedCSharpKind::Record(fields) => {
-                record::build_record_definition(csharp_name, namespace, fields, config)
+                record::build_record_definition(csharp_name, &ns_expr, fields, config)
             }
             DerivedCSharpKind::Enum(variants) => {
-                simple_enum::build_enum_definition(csharp_name, namespace, variants, config)
+                simple_enum::build_enum_definition(csharp_name, &ns_expr, variants, config)
             }
             DerivedCSharpKind::TaggedEnum { tagging, variants } => {
                 tagged_enum::build_tagged_enum_definition(
                     csharp_name,
-                    namespace,
+                    &ns_expr,
                     tagging,
                     variants,
                     config,
@@ -260,7 +266,8 @@ impl DerivedCSharp {
         quote! {
             #[test]
             fn #test_name() {
-                csharp_rs::export_to::<#ident>(#file_path)
+                let cfg = csharp_rs::Config::default();
+                csharp_rs::export_to::<#ident>(&cfg, #file_path)
                     .expect("failed to export C# definition");
             }
         }
@@ -329,7 +336,7 @@ impl DerivedCSharp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{CSharpNamespace, CSharpVersion, Serializer};
+    use crate::config::{CSharpVersion, Serializer};
     use crate::types::{CSharpVariant, EnumTagging, TaggedVariant, TaggedVariantData};
     use std::path::PathBuf;
 
@@ -338,11 +345,11 @@ mod tests {
         DerivedCSharp {
             rust_ident: quote::format_ident!("TestStruct"),
             csharp_name: String::from("TestStruct"),
-            namespace: CSharpNamespace::new("Test.Ns").unwrap(),
+            namespace_override: Some(String::from("Test.Ns")),
             kind: DerivedCSharpKind::Record(vec![CSharpField {
                 csharp_property_name: String::from("Name"),
                 json_name: String::from("name"),
-                type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name(cfg) },
                 is_optional: false,
                 flatten: FlattenKind::None,
             }]),
@@ -356,7 +363,7 @@ mod tests {
         DerivedCSharp {
             rust_ident: quote::format_ident!("Color"),
             csharp_name: String::from("Color"),
-            namespace: CSharpNamespace::new("Test.Ns").unwrap(),
+            namespace_override: Some(String::from("Test.Ns")),
             kind: DerivedCSharpKind::Enum(vec![
                 CSharpVariant {
                     csharp_name: String::from("Red"),
@@ -441,6 +448,14 @@ mod tests {
             tokens.contains("csharp-bindings"),
             "should use default export dir:\n{tokens}"
         );
+        assert!(
+            tokens.contains("Config :: default ()"),
+            "export test should create Config via default():\n{tokens}"
+        );
+        assert!(
+            tokens.contains("export_to"),
+            "export test should call export_to:\n{tokens}"
+        );
     }
 
     #[test]
@@ -451,6 +466,10 @@ mod tests {
             tokens.contains("custom/out"),
             "should use custom export dir:\n{tokens}"
         );
+        assert!(
+            tokens.contains("Config :: default ()"),
+            "export test should create Config via default():\n{tokens}"
+        );
     }
 
     #[test]
@@ -458,7 +477,7 @@ mod tests {
         let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("Empty"),
             csharp_name: String::from("Empty"),
-            namespace: CSharpNamespace::new("Ns").unwrap(),
+            namespace_override: Some(String::from("Ns")),
             kind: DerivedCSharpKind::Record(vec![]),
             export: false,
             export_to: None,
@@ -475,11 +494,11 @@ mod tests {
         let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("WithOpt"),
             csharp_name: String::from("WithOpt"),
-            namespace: CSharpNamespace::new("Ns").unwrap(),
+            namespace_override: Some(String::from("Ns")),
             kind: DerivedCSharpKind::Record(vec![CSharpField {
                 csharp_property_name: String::from("Score"),
                 json_name: String::from("score"),
-                type_expr: quote! { <f64 as csharp_rs::CSharp>::csharp_name() },
+                type_expr: quote! { <f64 as csharp_rs::CSharp>::csharp_name(cfg) },
                 is_optional: true,
                 flatten: FlattenKind::None,
             }]),
@@ -505,6 +524,10 @@ mod tests {
         assert!(
             tokens.contains("my/export/path"),
             "should use config export dir:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("Config :: default ()"),
+            "export test should create Config via default():\n{tokens}"
         );
     }
 
@@ -565,7 +588,7 @@ mod tests {
         DerivedCSharp {
             rust_ident: quote::format_ident!("Message"),
             csharp_name: String::from("Message"),
-            namespace: CSharpNamespace::new("Test.Ns").unwrap(),
+            namespace_override: Some(String::from("Test.Ns")),
             kind: DerivedCSharpKind::TaggedEnum {
                 tagging: EnumTagging::Internal {
                     tag: String::from("type"),
@@ -577,7 +600,7 @@ mod tests {
                         data: TaggedVariantData::Struct(vec![CSharpField {
                             csharp_property_name: String::from("Id"),
                             json_name: String::from("id"),
-                            type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                            type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name(cfg) },
                             is_optional: false,
                             flatten: FlattenKind::None,
                         }]),
@@ -586,7 +609,7 @@ mod tests {
                         csharp_name: String::from("Text"),
                         json_name: String::from("Text"),
                         data: TaggedVariantData::Newtype {
-                            type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                            type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name(cfg) },
                         },
                     },
                     TaggedVariant {
@@ -888,7 +911,7 @@ mod tests {
         let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("Status"),
             csharp_name: String::from("Status"),
-            namespace: CSharpNamespace::new("Test.Ns").unwrap(),
+            namespace_override: Some(String::from("Test.Ns")),
             kind: DerivedCSharpKind::TaggedEnum {
                 tagging: EnumTagging::Internal {
                     tag: String::from("kind"),
@@ -1132,7 +1155,7 @@ mod tests {
         DerivedCSharp {
             rust_ident: quote::format_ident!("Message"),
             csharp_name: String::from("Message"),
-            namespace: CSharpNamespace::new("Test.Ns").unwrap(),
+            namespace_override: Some(String::from("Test.Ns")),
             kind: DerivedCSharpKind::TaggedEnum {
                 tagging: EnumTagging::External,
                 variants: vec![
@@ -1142,7 +1165,7 @@ mod tests {
                         data: TaggedVariantData::Struct(vec![CSharpField {
                             csharp_property_name: String::from("Id"),
                             json_name: String::from("id"),
-                            type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                            type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name(cfg) },
                             is_optional: false,
                             flatten: FlattenKind::None,
                         }]),
@@ -1151,7 +1174,7 @@ mod tests {
                         csharp_name: String::from("Text"),
                         json_name: String::from("Text"),
                         data: TaggedVariantData::Newtype {
-                            type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                            type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name(cfg) },
                         },
                     },
                     TaggedVariant {
@@ -1317,7 +1340,7 @@ mod tests {
         DerivedCSharp {
             rust_ident: quote::format_ident!("Message"),
             csharp_name: String::from("Message"),
-            namespace: CSharpNamespace::new("Test.Ns").unwrap(),
+            namespace_override: Some(String::from("Test.Ns")),
             kind: DerivedCSharpKind::TaggedEnum {
                 tagging: EnumTagging::Adjacent {
                     tag: String::from("t"),
@@ -1330,7 +1353,7 @@ mod tests {
                         data: TaggedVariantData::Struct(vec![CSharpField {
                             csharp_property_name: String::from("Id"),
                             json_name: String::from("id"),
-                            type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                            type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name(cfg) },
                             is_optional: false,
                             flatten: FlattenKind::None,
                         }]),
@@ -1339,7 +1362,7 @@ mod tests {
                         csharp_name: String::from("Text"),
                         json_name: String::from("Text"),
                         data: TaggedVariantData::Newtype {
-                            type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                            type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name(cfg) },
                         },
                     },
                     TaggedVariant {
@@ -1535,7 +1558,7 @@ mod tests {
         DerivedCSharp {
             rust_ident: quote::format_ident!("Message"),
             csharp_name: String::from("Message"),
-            namespace: CSharpNamespace::new("Test.Ns").unwrap(),
+            namespace_override: Some(String::from("Test.Ns")),
             kind: DerivedCSharpKind::TaggedEnum {
                 tagging: EnumTagging::Untagged,
                 variants: vec![
@@ -1545,7 +1568,7 @@ mod tests {
                         data: TaggedVariantData::Struct(vec![CSharpField {
                             csharp_property_name: String::from("Id"),
                             json_name: String::from("id"),
-                            type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                            type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name(cfg) },
                             is_optional: false,
                             flatten: FlattenKind::None,
                         }]),
@@ -1554,7 +1577,7 @@ mod tests {
                         csharp_name: String::from("Text"),
                         json_name: String::from("Text"),
                         data: TaggedVariantData::Newtype {
-                            type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                            type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name(cfg) },
                         },
                     },
                     TaggedVariant {
@@ -1767,11 +1790,11 @@ mod tests {
         let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("WithOpt"),
             csharp_name: String::from("WithOpt"),
-            namespace: CSharpNamespace::new("Ns").unwrap(),
+            namespace_override: Some(String::from("Ns")),
             kind: DerivedCSharpKind::Record(vec![CSharpField {
                 csharp_property_name: String::from("Score"),
                 json_name: String::from("score"),
-                type_expr: quote! { <f64 as csharp_rs::CSharp>::csharp_name() },
+                type_expr: quote! { <f64 as csharp_rs::CSharp>::csharp_name(cfg) },
                 is_optional: true,
                 flatten: FlattenKind::None,
             }]),
@@ -1808,10 +1831,15 @@ mod tests {
         let ir = sample_enum_ir();
         let tokens = ir.into_token_stream(&config).to_string();
 
-        // C# 10+ should use file-scoped namespace.
+        // Namespace is now a runtime variable bound as `let ns: &str = "Test.Ns";`
+        // and used via `namespace {ns};` in the format template.
         assert!(
-            tokens.contains("namespace Test.Ns;"),
-            "C# 10 enum should use file-scoped namespace:\n{tokens}"
+            tokens.contains(r#""Test.Ns""#),
+            "C# 10 enum should bind namespace value:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("namespace {ns};"),
+            "C# 10 enum should use file-scoped namespace placeholder:\n{tokens}"
         );
     }
 
@@ -1821,14 +1849,19 @@ mod tests {
         let ir = sample_enum_ir();
         let tokens = ir.into_token_stream(&config).to_string();
 
-        // C# 9 should use block-scoped namespace.
+        // Namespace is now a runtime variable bound as `let ns: &str = "Test.Ns";`
+        // and used via `namespace {ns}\n` (block-scoped) in the format template.
         assert!(
-            !tokens.contains("namespace Test.Ns;"),
+            tokens.contains(r#""Test.Ns""#),
+            "C# 9 enum should bind namespace value:\n{tokens}"
+        );
+        assert!(
+            !tokens.contains("namespace {ns};"),
             "C# 9 enum should NOT use file-scoped namespace:\n{tokens}"
         );
         assert!(
-            tokens.contains("namespace Test.Ns"),
-            "C# 9 enum should contain namespace:\n{tokens}"
+            tokens.contains("namespace {ns}"),
+            "C# 9 enum should contain namespace placeholder:\n{tokens}"
         );
     }
 
@@ -1838,11 +1871,11 @@ mod tests {
         let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("WithOptStr"),
             csharp_name: String::from("WithOptStr"),
-            namespace: CSharpNamespace::new("Ns").unwrap(),
+            namespace_override: Some(String::from("Ns")),
             kind: DerivedCSharpKind::Record(vec![CSharpField {
                 csharp_property_name: String::from("Name"),
                 json_name: String::from("name"),
-                type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name(cfg) },
                 is_optional: true,
                 flatten: FlattenKind::None,
             }]),
@@ -1881,7 +1914,7 @@ mod tests {
         let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("Event"),
             csharp_name: String::from("Event"),
-            namespace: CSharpNamespace::new("Ns").unwrap(),
+            namespace_override: Some(String::from("Ns")),
             kind: DerivedCSharpKind::TaggedEnum {
                 tagging: EnumTagging::Internal {
                     tag: String::from("type"),
@@ -1892,7 +1925,7 @@ mod tests {
                     data: TaggedVariantData::Struct(vec![CSharpField {
                         csharp_property_name: String::from("Payload"),
                         json_name: String::from("payload"),
-                        type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                        type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name(cfg) },
                         is_optional: true,
                         flatten: FlattenKind::None,
                     }]),
@@ -1927,19 +1960,19 @@ mod tests {
         let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("Outer"),
             csharp_name: String::from("Outer"),
-            namespace: CSharpNamespace::new("Ns").unwrap(),
+            namespace_override: Some(String::from("Ns")),
             kind: DerivedCSharpKind::Record(vec![
                 CSharpField {
                     csharp_property_name: String::from("Name"),
                     json_name: String::from("name"),
-                    type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                    type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name(cfg) },
                     is_optional: false,
                     flatten: FlattenKind::None,
                 },
                 CSharpField {
                     csharp_property_name: String::new(),
                     json_name: String::new(),
-                    type_expr: quote! { <Inner as csharp_rs::CSharp>::csharp_fields() },
+                    type_expr: quote! { <Inner as csharp_rs::CSharp>::csharp_fields(cfg) },
                     is_optional: false,
                     flatten: FlattenKind::Struct,
                 },
@@ -1961,15 +1994,15 @@ mod tests {
         let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("WithExtra"),
             csharp_name: String::from("WithExtra"),
-            namespace: CSharpNamespace::new("Ns").unwrap(),
+            namespace_override: Some(String::from("Ns")),
             kind: DerivedCSharpKind::Record(vec![CSharpField {
                 csharp_property_name: String::new(),
                 json_name: String::new(),
                 type_expr: TokenStream::new(),
                 is_optional: false,
                 flatten: FlattenKind::HashMap {
-                    key_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
-                    value_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                    key_expr: quote! { <String as csharp_rs::CSharp>::csharp_name(cfg) },
+                    value_expr: quote! { <String as csharp_rs::CSharp>::csharp_name(cfg) },
                 },
             }]),
             export: false,
@@ -1989,19 +2022,19 @@ mod tests {
         let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("Outer"),
             csharp_name: String::from("Outer"),
-            namespace: CSharpNamespace::new("Ns").unwrap(),
+            namespace_override: Some(String::from("Ns")),
             kind: DerivedCSharpKind::Record(vec![
                 CSharpField {
                     csharp_property_name: String::from("Name"),
                     json_name: String::from("name"),
-                    type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                    type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name(cfg) },
                     is_optional: false,
                     flatten: FlattenKind::None,
                 },
                 CSharpField {
                     csharp_property_name: String::new(),
                     json_name: String::new(),
-                    type_expr: quote! { <Inner as csharp_rs::CSharp>::csharp_fields() },
+                    type_expr: quote! { <Inner as csharp_rs::CSharp>::csharp_fields(cfg) },
                     is_optional: false,
                     flatten: FlattenKind::Struct,
                 },
@@ -2030,7 +2063,7 @@ mod tests {
         let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("Event"),
             csharp_name: String::from("Event"),
-            namespace: CSharpNamespace::new("Ns").unwrap(),
+            namespace_override: Some(String::from("Ns")),
             kind: DerivedCSharpKind::TaggedEnum {
                 tagging: EnumTagging::Internal {
                     tag: String::from("type"),
@@ -2042,14 +2075,14 @@ mod tests {
                         CSharpField {
                             csharp_property_name: String::from("Name"),
                             json_name: String::from("name"),
-                            type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                            type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name(cfg) },
                             is_optional: false,
                             flatten: FlattenKind::None,
                         },
                         CSharpField {
                             csharp_property_name: String::new(),
                             json_name: String::new(),
-                            type_expr: quote! { <Inner as csharp_rs::CSharp>::csharp_fields() },
+                            type_expr: quote! { <Inner as csharp_rs::CSharp>::csharp_fields(cfg) },
                             is_optional: false,
                             flatten: FlattenKind::Struct,
                         },
@@ -2081,7 +2114,7 @@ mod tests {
         let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("Event"),
             csharp_name: String::from("Event"),
-            namespace: CSharpNamespace::new("Ns").unwrap(),
+            namespace_override: Some(String::from("Ns")),
             kind: DerivedCSharpKind::TaggedEnum {
                 tagging: EnumTagging::Internal {
                     tag: String::from("type"),
@@ -2093,7 +2126,7 @@ mod tests {
                         CSharpField {
                             csharp_property_name: String::from("Version"),
                             json_name: String::from("version"),
-                            type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                            type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name(cfg) },
                             is_optional: false,
                             flatten: FlattenKind::None,
                         },
@@ -2103,8 +2136,8 @@ mod tests {
                             type_expr: TokenStream::new(),
                             is_optional: false,
                             flatten: FlattenKind::HashMap {
-                                key_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
-                                value_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                                key_expr: quote! { <String as csharp_rs::CSharp>::csharp_name(cfg) },
+                                value_expr: quote! { <String as csharp_rs::CSharp>::csharp_name(cfg) },
                             },
                         },
                     ]),
@@ -2127,7 +2160,7 @@ mod tests {
         let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("Event"),
             csharp_name: String::from("Event"),
-            namespace: CSharpNamespace::new("Ns").unwrap(),
+            namespace_override: Some(String::from("Ns")),
             kind: DerivedCSharpKind::TaggedEnum {
                 tagging: EnumTagging::Internal {
                     tag: String::from("type"),
@@ -2139,7 +2172,7 @@ mod tests {
                         CSharpField {
                             csharp_property_name: String::from("Name"),
                             json_name: String::from("name"),
-                            type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                            type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name(cfg) },
                             is_optional: false,
                             flatten: FlattenKind::None,
                         },
@@ -2149,8 +2182,8 @@ mod tests {
                             type_expr: TokenStream::new(),
                             is_optional: false,
                             flatten: FlattenKind::HashMap {
-                                key_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
-                                value_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                                key_expr: quote! { <String as csharp_rs::CSharp>::csharp_name(cfg) },
+                                value_expr: quote! { <String as csharp_rs::CSharp>::csharp_name(cfg) },
                             },
                         },
                     ]),
@@ -2181,7 +2214,7 @@ mod tests {
         let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("Event"),
             csharp_name: String::from("Event"),
-            namespace: CSharpNamespace::new("Ns").unwrap(),
+            namespace_override: Some(String::from("Ns")),
             kind: DerivedCSharpKind::TaggedEnum {
                 tagging: EnumTagging::Internal {
                     tag: String::from("type"),
@@ -2195,8 +2228,8 @@ mod tests {
                         type_expr: TokenStream::new(),
                         is_optional: false,
                         flatten: FlattenKind::HashMap {
-                            key_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
-                            value_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                            key_expr: quote! { <String as csharp_rs::CSharp>::csharp_name(cfg) },
+                            value_expr: quote! { <String as csharp_rs::CSharp>::csharp_name(cfg) },
                         },
                     }]),
                 }],
@@ -2238,12 +2271,12 @@ mod tests {
         let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("WithExtra"),
             csharp_name: String::from("WithExtra"),
-            namespace: CSharpNamespace::new("Ns").unwrap(),
+            namespace_override: Some(String::from("Ns")),
             kind: DerivedCSharpKind::Record(vec![
                 CSharpField {
                     csharp_property_name: String::from("Name"),
                     json_name: String::from("name"),
-                    type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                    type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name(cfg) },
                     is_optional: false,
                     flatten: FlattenKind::None,
                 },
@@ -2253,8 +2286,8 @@ mod tests {
                     type_expr: TokenStream::new(),
                     is_optional: false,
                     flatten: FlattenKind::HashMap {
-                        key_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
-                        value_expr: quote! { <String as csharp_rs::CSharp>::csharp_name() },
+                        key_expr: quote! { <String as csharp_rs::CSharp>::csharp_name(cfg) },
+                        value_expr: quote! { <String as csharp_rs::CSharp>::csharp_name(cfg) },
                     },
                 },
             ]),

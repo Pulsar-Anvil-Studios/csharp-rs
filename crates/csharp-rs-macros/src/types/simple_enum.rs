@@ -8,7 +8,6 @@
 use crate::attr::container::ContainerAttr;
 use crate::attr::field::FieldAttr;
 use crate::attr::from_pascal_to_snake;
-use crate::config::{CSharpConfig, CSharpNamespace};
 use crate::types::{CSharpVariant, DerivedCSharp, DerivedCSharpKind};
 use syn::{DataEnum, DeriveInput, Fields};
 
@@ -22,16 +21,11 @@ pub fn simple_enum(
     input: &DeriveInput,
     enum_data: &DataEnum,
     container: &ContainerAttr,
-    config: &CSharpConfig,
 ) -> syn::Result<DerivedCSharp> {
     let rust_ident = input.ident.clone();
     let csharp_name = rust_ident.to_string();
 
-    let namespace = match &container.namespace {
-        Some(ns) => CSharpNamespace::new(ns.as_str())
-            .expect("namespace was validated in ContainerAttr::parse_csharp"),
-        None => config.namespace.clone(),
-    };
+    let namespace_override = container.namespace.clone();
 
     let mut variants = Vec::new();
 
@@ -71,7 +65,7 @@ pub fn simple_enum(
     Ok(DerivedCSharp {
         rust_ident,
         csharp_name,
-        namespace,
+        namespace_override,
         kind: DerivedCSharpKind::Enum(variants),
         export: container.export,
         export_to: container.export_to.clone(),
@@ -83,16 +77,12 @@ mod tests {
     use super::*;
     use syn::parse_quote;
 
-    fn default_config() -> CSharpConfig {
-        CSharpConfig::default()
-    }
-
     fn process_enum(input: &DeriveInput) -> DerivedCSharp {
         let container = ContainerAttr::from_attrs(&input.attrs).unwrap();
         let syn::Data::Enum(ref enum_data) = input.data else {
             panic!("expected enum");
         };
-        simple_enum(input, enum_data, &container, &default_config()).unwrap()
+        simple_enum(input, enum_data, &container).unwrap()
     }
 
     fn extract_variants(ir: &DerivedCSharp) -> &[CSharpVariant] {
@@ -184,7 +174,7 @@ mod tests {
         let syn::Data::Enum(ref enum_data) = input.data else {
             panic!("expected enum");
         };
-        let result = simple_enum(&input, enum_data, &container, &default_config());
+        let result = simple_enum(&input, enum_data, &container);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
@@ -204,7 +194,7 @@ mod tests {
         let syn::Data::Enum(ref enum_data) = input.data else {
             panic!("expected enum");
         };
-        let result = simple_enum(&input, enum_data, &container, &default_config());
+        let result = simple_enum(&input, enum_data, &container);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(

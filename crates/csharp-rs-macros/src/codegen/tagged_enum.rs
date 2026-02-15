@@ -125,7 +125,7 @@ fn csharp_safe_var_name(name: &str) -> String {
 /// `JsonConverter<T>` class when native polymorphism is not available.
 pub fn build_tagged_enum_definition(
     csharp_name: &str,
-    namespace: &str,
+    ns_expr: &TokenStream,
     tagging: &EnumTagging,
     variants: &[TaggedVariant],
     config: &CSharpConfig,
@@ -178,7 +178,7 @@ pub fn build_tagged_enum_definition(
     if use_file_scoped_ns {
         build_file_scoped(
             &using_block,
-            namespace,
+            ns_expr,
             &class_attrs,
             csharp_name,
             indent,
@@ -190,7 +190,7 @@ pub fn build_tagged_enum_definition(
     } else {
         build_block_scoped(
             &using_block,
-            namespace,
+            ns_expr,
             &class_attrs,
             csharp_name,
             indent,
@@ -2931,7 +2931,7 @@ fn build_untagged_newtonsoft_write_struct_arm(
 )]
 fn build_file_scoped(
     using_block: &str,
-    namespace: &str,
+    ns_expr: &TokenStream,
     class_attrs: &str,
     csharp_name: &str,
     indent: &str,
@@ -2944,6 +2944,7 @@ fn build_file_scoped(
 
     quote! {
         {
+            let ns: &str = #ns_expr;
             let variant_parts: Vec<String> = vec![#(#variant_exprs),*];
             let variants_block = variant_parts.join("\n\n");
             let converter_block: String = #converter_append;
@@ -2976,7 +2977,7 @@ fn build_file_scoped(
                  {indent}public abstract record {name}{body}\n",
                 nullable = nullable_directive,
                 using = #using_block,
-                ns = #namespace,
+                ns = ns,
                 attrs = #class_attrs,
                 indent = #indent,
                 name = #csharp_name,
@@ -2993,7 +2994,7 @@ fn build_file_scoped(
 )]
 fn build_block_scoped(
     using_block: &str,
-    namespace: &str,
+    ns_expr: &TokenStream,
     class_attrs: &str,
     csharp_name: &str,
     indent: &str,
@@ -3006,6 +3007,7 @@ fn build_block_scoped(
 
     quote! {
         {
+            let ns: &str = #ns_expr;
             let variant_parts: Vec<String> = vec![#(#variant_exprs),*];
             let variants_block = variant_parts.join("\n\n");
             let converter_block: String = #converter_append;
@@ -3039,7 +3041,7 @@ fn build_block_scoped(
                  }}\n",
                 nullable = nullable_directive,
                 using = #using_block,
-                ns = #namespace,
+                ns = ns,
                 indent = #indent,
                 attrs = #class_attrs,
                 name = #csharp_name,

@@ -1,4 +1,4 @@
-// Rust guideline compliant 2026-02-14
+// Rust guideline compliant 2026-03-14
 //! Generate C# type definitions from Rust structs and enums.
 //!
 //! `csharp-rs` provides a derive macro that generates C# class, record,
@@ -365,6 +365,19 @@ impl_csharp_primitive!(u128, "decimal");
 // Floating point
 impl_csharp_primitive!(f32, "float");
 impl_csharp_primitive!(f64, "double");
+
+// ---------------------------------------------------------------------------
+// Feature-gated external type impls
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "uuid-impl")]
+impl_csharp_primitive!(uuid::Uuid, "Guid");
+
+#[cfg(feature = "chrono-impl")]
+mod chrono_impl;
+
+#[cfg(feature = "serde-json-impl")]
+mod serde_json_impl;
 
 // ---------------------------------------------------------------------------
 // Generic type mappings
@@ -789,5 +802,101 @@ mod tests {
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- uuid feature-gated tests ---
+
+    #[cfg(feature = "uuid-impl")]
+    #[test]
+    fn uuid_maps_to_guid() {
+        let cfg = Config::default();
+        assert_eq!(<uuid::Uuid as CSharp>::csharp_name(&cfg), "Guid");
+        assert!(<uuid::Uuid as CSharp>::csharp_definition(&cfg).is_empty());
+        assert!(<uuid::Uuid as CSharp>::dependencies(&cfg).is_empty());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Feature-gated external type tests
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "chrono-impl")]
+#[cfg(test)]
+mod chrono_tests {
+    use super::*;
+
+    #[test]
+    fn datetime_utc_maps_to_datetimeoffset() {
+        let cfg = Config::default();
+        assert_eq!(
+            <chrono::DateTime<chrono::Utc> as CSharp>::csharp_name(&cfg),
+            "DateTimeOffset"
+        );
+    }
+
+    #[test]
+    fn naive_date_maps_to_dateonly() {
+        let cfg = Config::default();
+        assert_eq!(<chrono::NaiveDate as CSharp>::csharp_name(&cfg), "DateOnly");
+    }
+
+    #[test]
+    fn naive_time_maps_to_timeonly() {
+        let cfg = Config::default();
+        assert_eq!(<chrono::NaiveTime as CSharp>::csharp_name(&cfg), "TimeOnly");
+    }
+
+    #[test]
+    fn naive_datetime_maps_to_datetime() {
+        let cfg = Config::default();
+        assert_eq!(
+            <chrono::NaiveDateTime as CSharp>::csharp_name(&cfg),
+            "DateTime"
+        );
+    }
+
+    #[test]
+    fn duration_maps_to_timespan() {
+        let cfg = Config::default();
+        assert_eq!(<chrono::Duration as CSharp>::csharp_name(&cfg), "TimeSpan");
+    }
+}
+
+#[cfg(feature = "serde-json-impl")]
+#[cfg(test)]
+mod serde_json_tests {
+    use super::*;
+
+    #[test]
+    fn serde_json_value_stj_maps_to_json_element() {
+        let cfg = Config::default();
+        assert_eq!(
+            <serde_json::Value as CSharp>::csharp_name(&cfg),
+            "JsonElement"
+        );
+    }
+
+    #[test]
+    fn serde_json_value_newtonsoft_maps_to_jtoken() {
+        let cfg = Config::default().with_serializer(Serializer::Newtonsoft);
+        assert_eq!(
+            <serde_json::Value as CSharp>::csharp_name(&cfg),
+            "JToken"
+        );
+    }
+
+    #[test]
+    fn serde_json_number_maps_to_double() {
+        let cfg = Config::default();
+        assert_eq!(
+            <serde_json::Number as CSharp>::csharp_name(&cfg),
+            "double"
+        );
+    }
+
+    #[test]
+    fn serde_json_value_definition_is_empty() {
+        let cfg = Config::default();
+        assert!(<serde_json::Value as CSharp>::csharp_definition(&cfg).is_empty());
     }
 }

@@ -85,7 +85,7 @@ impl DerivedCSharp {
     }
 
     /// Builds the `csharp_definition()` body that returns a complete `.cs` file.
-    fn build_definition(&self, config: &CSharpConfig) -> TokenStream {
+    fn build_definition(&self, _config: &CSharpConfig) -> TokenStream {
         // Namespace is resolved at runtime: per-type override or cfg.namespace().
         let ns_expr = if let Some(ns) = &self.namespace_override {
             quote! { #ns }
@@ -96,10 +96,10 @@ impl DerivedCSharp {
 
         match &self.kind {
             DerivedCSharpKind::Record(fields) => {
-                record::build_record_definition(csharp_name, &ns_expr, fields, config)
+                record::build_record_definition(csharp_name, &ns_expr, fields)
             }
             DerivedCSharpKind::Enum(variants) => {
-                simple_enum::build_enum_definition(csharp_name, &ns_expr, variants, config)
+                simple_enum::build_enum_definition(csharp_name, &ns_expr, variants)
             }
             DerivedCSharpKind::TaggedEnum { tagging, variants } => {
                 tagged_enum::build_tagged_enum_definition(
@@ -107,7 +107,6 @@ impl DerivedCSharp {
                     &ns_expr,
                     tagging,
                     variants,
-                    config,
                 )
             }
         }
@@ -398,30 +397,24 @@ mod tests {
     }
 
     #[test]
-    fn stj_token_stream_contains_json_property_name() {
+    fn record_token_stream_contains_both_serializer_paths() {
         let ir = sample_ir(false, None);
         let tokens = ir.into_token_stream(&stj_config()).to_string();
         assert!(
             tokens.contains("JsonPropertyName"),
-            "STJ output should contain JsonPropertyName:\n{tokens}"
+            "should contain STJ attribute path:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("JsonProperty"),
+            "should contain Newtonsoft attribute path:\n{tokens}"
         );
         assert!(
             tokens.contains("System.Text.Json.Serialization"),
-            "STJ output should contain using directive:\n{tokens}"
-        );
-    }
-
-    #[test]
-    fn newtonsoft_token_stream_contains_json_property() {
-        let ir = sample_ir(false, None);
-        let tokens = ir.into_token_stream(&newtonsoft_config()).to_string();
-        assert!(
-            tokens.contains("JsonProperty"),
-            "Newtonsoft output should contain JsonProperty:\n{tokens}"
+            "should contain STJ using directive:\n{tokens}"
         );
         assert!(
             tokens.contains("Newtonsoft.Json"),
-            "Newtonsoft output should contain using directive:\n{tokens}"
+            "should contain Newtonsoft using directive:\n{tokens}"
         );
     }
 
@@ -701,15 +694,19 @@ mod tests {
         let ir = sample_tagged_enum_ir();
         let tokens = ir.into_token_stream(&config).to_string();
 
-        // Struct/newtype variants use format params; check the template pattern.
+        // Struct/newtype variants use named format params.
         assert!(
             tokens.contains("sealed record {name} : {parent}"),
             "should contain sealed record pattern for data variants:\n{tokens}"
         );
-        // Unit variant is a full string literal.
+        // Unit variant uses positional format with literal variant name.
         assert!(
-            tokens.contains("sealed record Quit : Message;"),
-            "should contain sealed record literal for unit variant:\n{tokens}"
+            tokens.contains("public sealed record {} : {};"),
+            "should contain sealed record unit format template:\n{tokens}"
+        );
+        assert!(
+            tokens.contains(r#""Quit""#),
+            "should contain Quit variant name as format arg:\n{tokens}"
         );
     }
 
@@ -751,52 +748,61 @@ mod tests {
     }
 
     #[test]
-    fn tagged_internal_stj_csharp9_has_block_namespace() {
-        let config = stj_config(); // default is C# 9
+    fn tagged_enum_has_runtime_namespace_branching() {
+        let config = stj_config();
         let ir = sample_tagged_enum_ir();
         let tokens = ir.into_token_stream(&config).to_string();
 
-        // Block namespace should NOT have semicolon directly after `{ns}`.
+        // Runtime branching: both file-scoped and block-scoped templates exist.
         assert!(
-            !tokens.contains("namespace {ns};"),
-            "C# 9 should use block-scoped namespace, not file-scoped:\n{tokens}"
+            tokens.contains("namespace {ns};"),
+            "tagged enum should contain file-scoped namespace template:\n{tokens}"
         );
         assert!(
-            tokens.contains("namespace {ns}"),
-            "should contain namespace placeholder:\n{tokens}"
+            tokens.contains("namespace {ns}\\n"),
+            "tagged enum should contain block-scoped namespace template:\n{tokens}"
         );
-    }
-
-    #[test]
-    fn tagged_internal_stj_csharp9_no_required() {
-        let config = stj_config(); // default is C# 9
-        let ir = sample_tagged_enum_ir();
-        let tokens = ir.into_token_stream(&config).to_string();
-
         assert!(
-            !tokens.contains("required"),
-            "C# 9 should NOT emit required modifier:\n{tokens}"
+            tokens.contains("use_file_scoped"),
+            "tagged enum should branch on use_file_scoped:\n{tokens}"
         );
     }
 
     #[test]
-    fn tagged_internal_stj_csharp9_has_json_converter() {
-        let config = stj_config(); // default is C# 9
+    fn tagged_enum_has_runtime_required_branching() {
+        let config = stj_config();
         let ir = sample_tagged_enum_ir();
         let tokens = ir.into_token_stream(&config).to_string();
 
+        // Runtime branching: `required_kw` variable determined by cfg.target().
+        assert!(
+            tokens.contains("required_kw"),
+            "tagged enum should branch on required_kw:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("use_required"),
+            "tagged enum should have use_required variable:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn tagged_enum_has_both_converter_and_native_paths() {
+        let config = stj_config();
+        let ir = sample_tagged_enum_ir();
+        let tokens = ir.into_token_stream(&config).to_string();
+
+        // Runtime branching: both converter and native polymorphism paths exist.
         assert!(
             tokens.contains("JsonConverter"),
-            "C# 9 + STJ should use [JsonConverter] (converter path):\n{tokens}"
+            "tagged enum should contain converter path:\n{tokens}"
         );
         assert!(
             tokens.contains("MessageConverter"),
-            "should reference MessageConverter:\n{tokens}"
+            "tagged enum should reference MessageConverter:\n{tokens}"
         );
-        // Should NOT have [JsonPolymorphic] on C# 9
         assert!(
-            !tokens.contains("JsonPolymorphic"),
-            "C# 9 should NOT use [JsonPolymorphic]:\n{tokens}"
+            tokens.contains("JsonPolymorphic"),
+            "tagged enum should contain native polymorphism path:\n{tokens}"
         );
     }
 
@@ -834,52 +840,61 @@ mod tests {
         let ir = sample_tagged_enum_ir();
         let tokens = ir.into_token_stream(&config).to_string();
 
-        // Unit variant is a literal string in the token stream.
+        // Unit variant uses positional format with literal variant name.
         assert!(
-            tokens.contains("sealed record Quit : Message;"),
-            "unit variant should use semicolon (no braces):\n{tokens}"
+            tokens.contains("public sealed record {} : {};"),
+            "unit variant should use semicolon format template:\n{tokens}"
+        );
+        assert!(
+            tokens.contains(r#""Quit""#),
+            "unit variant should contain Quit as format arg:\n{tokens}"
         );
     }
 
     #[test]
-    fn tagged_newtonsoft_has_json_property() {
-        let config = CSharpConfig {
-            serializer: Serializer::Newtonsoft,
-            target: CSharpVersion::CSharp11,
-            ..CSharpConfig::default()
-        };
+    fn tagged_enum_contains_both_serializer_attribute_paths() {
+        let config = stj_config();
         let ir = sample_tagged_enum_ir();
         let tokens = ir.into_token_stream(&config).to_string();
 
+        // Runtime branching: both serializer attribute paths exist.
         assert!(
-            tokens.contains("JsonProperty"),
-            "Newtonsoft should use [JsonProperty] instead of [JsonPropertyName]:\n{tokens}"
+            tokens.contains("JsonPropertyName"),
+            "tagged enum should contain STJ attribute path:\n{tokens}"
         );
         assert!(
-            !tokens.contains("JsonPropertyName"),
-            "Newtonsoft should NOT contain JsonPropertyName:\n{tokens}"
+            tokens.contains("JsonProperty"),
+            "tagged enum should contain Newtonsoft attribute path:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("System.Text.Json.Serialization"),
+            "tagged enum should contain STJ using directive:\n{tokens}"
         );
         assert!(
             tokens.contains("Newtonsoft.Json"),
-            "Newtonsoft should contain using Newtonsoft.Json:\n{tokens}"
+            "tagged enum should contain Newtonsoft using directive:\n{tokens}"
         );
     }
 
     #[test]
-    fn tagged_csharp10_has_file_scoped_but_no_required() {
+    fn tagged_enum_runtime_branches_both_namespace_styles() {
         let config = stj_csharp10_config();
         let ir = sample_tagged_enum_ir();
         let tokens = ir.into_token_stream(&config).to_string();
 
-        // C# 10 uses converter path (not native polymorphism), so format template
-        // should contain file-scoped namespace pattern.
+        // Runtime branching: both namespace styles exist in the token stream.
         assert!(
             tokens.contains("namespace {ns};"),
-            "C# 10 should use file-scoped namespace:\n{tokens}"
+            "tagged enum should contain file-scoped namespace template:\n{tokens}"
         );
         assert!(
-            !tokens.contains("required"),
-            "C# 10 should NOT emit required modifier:\n{tokens}"
+            tokens.contains("use_file_scoped"),
+            "tagged enum should branch on use_file_scoped:\n{tokens}"
+        );
+        // `required_kw` is a runtime variable, not baked at compile time.
+        assert!(
+            tokens.contains("required_kw"),
+            "tagged enum should have required_kw runtime variable:\n{tokens}"
         );
     }
 
@@ -940,23 +955,24 @@ mod tests {
     }
 
     #[test]
-    fn tagged_newtonsoft_uses_converter_path_not_polymorphic() {
-        // Even with C# 11+, Newtonsoft should use converter path
-        let config = CSharpConfig {
-            serializer: Serializer::Newtonsoft,
-            target: CSharpVersion::CSharp12,
-            ..CSharpConfig::default()
-        };
+    fn tagged_enum_runtime_branches_converter_and_native_poly() {
+        let config = stj_config();
         let ir = sample_tagged_enum_ir();
         let tokens = ir.into_token_stream(&config).to_string();
 
+        // Runtime branching: both converter and native polymorphism paths exist.
         assert!(
             tokens.contains("MessageConverter"),
-            "Newtonsoft should use converter path:\n{tokens}"
+            "tagged enum should contain converter path:\n{tokens}"
         );
         assert!(
-            !tokens.contains("JsonPolymorphic"),
-            "Newtonsoft should NOT use [JsonPolymorphic]:\n{tokens}"
+            tokens.contains("JsonPolymorphic"),
+            "tagged enum should contain native polymorphism path:\n{tokens}"
+        );
+        // Runtime decision variable for native vs converter path.
+        assert!(
+            tokens.contains("use_native_polymorphism"),
+            "tagged enum should branch on use_native_polymorphism:\n{tokens}"
         );
     }
 
@@ -980,18 +996,23 @@ mod tests {
             tokens.contains("return tag switch"),
             "STJ converter Read should contain tag switch:\n{tokens}"
         );
-        // Switch arms for each variant.
+        // Variant names appear as format args, not literal text.
         assert!(
-            tokens.contains("Request") && tokens.contains("=> new"),
-            "STJ converter Read should have Request arm:\n{tokens}"
+            tokens.contains(r#"name = "Request""#),
+            "STJ converter Read should have Request variant:\n{tokens}"
         );
         assert!(
-            tokens.contains("Text") && tokens.contains("=> new"),
-            "STJ converter Read should have Text arm:\n{tokens}"
+            tokens.contains(r#"name = "Text""#),
+            "STJ converter Read should have Text variant:\n{tokens}"
         );
         assert!(
-            tokens.contains("new Quit()"),
-            "STJ converter Read should have Quit arm:\n{tokens}"
+            tokens.contains(r#"name = "Quit""#),
+            "STJ converter Read should have Quit variant:\n{tokens}"
+        );
+        // Unit variant uses `=> new {name}()` pattern in template.
+        assert!(
+            tokens.contains("=> new {name}()"),
+            "STJ converter Read should have unit variant template:\n{tokens}"
         );
     }
 
@@ -1118,32 +1139,36 @@ mod tests {
         let ir = sample_tagged_enum_ir();
         let tokens = ir.into_token_stream(&config).to_string();
 
-        // The Quit variant is a unit; should use `new Quit()`.
+        // Unit variant uses `=> new {name}()` template with `name = "Quit"` arg.
         assert!(
-            tokens.contains("new Quit()"),
-            "unit variant Read arm should use empty constructor:\n{tokens}"
+            tokens.contains("=> new {name}()"),
+            "unit variant Read arm should use empty constructor template:\n{tokens}"
+        );
+        assert!(
+            tokens.contains(r#"name = "Quit""#),
+            "unit variant Read arm should bind name to Quit:\n{tokens}"
         );
     }
 
     #[test]
-    fn stj_csharp11_has_no_converter_class() {
+    fn tagged_enum_has_both_converter_class_and_native_poly() {
         let config = stj_csharp11_config();
         let ir = sample_tagged_enum_ir();
         let tokens = ir.into_token_stream(&config).to_string();
 
-        // C# 11 + STJ uses native [JsonPolymorphic], so no converter class.
+        // Runtime branching: both converter class and native [JsonPolymorphic]
+        // paths exist in the token stream; cfg.target() decides at runtime.
         assert!(
-            !tokens.contains("private sealed class"),
-            "C# 11 + STJ should NOT generate converter class:\n{tokens}"
+            tokens.contains("private sealed class"),
+            "tagged enum should contain converter class template:\n{tokens}"
         );
         assert!(
-            !tokens.contains("JsonDocument.ParseValue"),
-            "C# 11 + STJ should NOT contain converter Read body:\n{tokens}"
+            tokens.contains("JsonDocument.ParseValue"),
+            "tagged enum should contain converter Read body:\n{tokens}"
         );
-        // Should have the native attributes instead.
         assert!(
             tokens.contains("JsonPolymorphic"),
-            "C# 11 + STJ should use native [JsonPolymorphic]:\n{tokens}"
+            "tagged enum should contain native [JsonPolymorphic]:\n{tokens}"
         );
     }
 
@@ -1225,9 +1250,14 @@ mod tests {
             tokens.contains("GetString"),
             "STJ external Read should call GetString() for the variant name:\n{tokens}"
         );
+        // Unit variant uses format template with name placeholder.
         assert!(
-            tokens.contains("new Quit()"),
-            "STJ external Read should construct unit variant with empty ctor:\n{tokens}"
+            tokens.contains("=> new {name}()"),
+            "STJ external Read should use empty ctor template:\n{tokens}"
+        );
+        assert!(
+            tokens.contains(r#"name = "Quit""#),
+            "STJ external Read should bind name to Quit:\n{tokens}"
         );
     }
 
@@ -1444,24 +1474,14 @@ mod tests {
         let ir = sample_adjacent_tagged_enum_ir();
         let tokens = ir.into_token_stream(&config).to_string();
 
-        // The unit variant Write arm should have WriteString for tag but NOT
-        // contain the content key in the same case block. We check the unit
-        // arm specifically: `case Quit:` followed by WriteStartObject,
-        // WriteString (tag), WriteEndObject, break — no content property.
+        // Unit variant uses `case {name}:` format template with `name = "Quit"`.
         assert!(
-            tokens.contains("case Quit"),
-            "STJ adjacent Write should have case Quit:\n{tokens}"
+            tokens.contains("case {name}"),
+            "STJ adjacent Write should have case template:\n{tokens}"
         );
-
-        // Extract the Quit case block to verify no content key.
-        let quit_section = tokens
-            .split("case Quit")
-            .nth(1)
-            .and_then(|s| s.split("break;").next())
-            .unwrap_or("");
         assert!(
-            !quit_section.contains(r#"WritePropertyName(\"c\")"#),
-            "STJ adjacent Write unit variant should NOT write content key:\n{quit_section}"
+            tokens.contains(r#"name = "Quit""#),
+            "STJ adjacent Write should bind name to Quit:\n{tokens}"
         );
     }
 
@@ -1531,22 +1551,14 @@ mod tests {
         let ir = sample_adjacent_tagged_enum_ir();
         let tokens = ir.into_token_stream(&config).to_string();
 
-        // The unit variant Write arm should have WritePropertyName for tag
-        // and WriteValue for the variant name, but no content key.
+        // Unit variant uses `case {name}:` format template with `name = "Quit"`.
         assert!(
-            tokens.contains("case Quit"),
-            "Newtonsoft adjacent Write should have case Quit:\n{tokens}"
+            tokens.contains("case {name}"),
+            "Newtonsoft adjacent Write should have case template:\n{tokens}"
         );
-
-        // Extract the Quit case block to verify no content key.
-        let quit_section = tokens
-            .split("case Quit")
-            .nth(1)
-            .and_then(|s| s.split("break;").next())
-            .unwrap_or("");
         assert!(
-            !quit_section.contains(r#"WritePropertyName(\"c\")"#),
-            "Newtonsoft adjacent Write unit variant should NOT write content key:\n{quit_section}"
+            tokens.contains(r#"name = "Quit""#),
+            "Newtonsoft adjacent Write should bind name to Quit:\n{tokens}"
         );
     }
 
@@ -1646,9 +1658,14 @@ mod tests {
             tokens.contains("ValueKind.Null"),
             "untagged STJ Read should check ValueKind.Null for unit variants:\n{tokens}"
         );
+        // Unit variant uses format template with name placeholder.
         assert!(
-            tokens.contains("new Quit()"),
-            "untagged STJ Read should construct Quit with empty ctor:\n{tokens}"
+            tokens.contains("new {name}()"),
+            "untagged STJ Read should use empty ctor template:\n{tokens}"
+        );
+        assert!(
+            tokens.contains(r#"name = "Quit""#),
+            "untagged STJ Read should bind name to Quit:\n{tokens}"
         );
     }
 
@@ -1760,14 +1777,20 @@ mod tests {
         let ir = sample_ir(false, None);
         let tokens = ir.into_token_stream(&config).to_string();
 
-        // C# 9 should use block-scoped namespace (no semicolon after ns).
+        // Runtime branching: both file-scoped and block-scoped templates
+        // exist in the token stream as branches of `if use_file_scoped`.
         assert!(
-            !tokens.contains("namespace {ns};"),
-            "C# 9 record should NOT use file-scoped namespace:\n{tokens}"
+            tokens.contains("namespace {ns};"),
+            "record should contain file-scoped namespace template branch:\n{tokens}"
         );
         assert!(
-            tokens.contains("namespace {ns}"),
-            "C# 9 record should contain namespace placeholder:\n{tokens}"
+            tokens.contains("namespace {ns}\\n"),
+            "record should contain block-scoped namespace template branch:\n{tokens}"
+        );
+        // Verify the runtime branching variable is present.
+        assert!(
+            tokens.contains("use_file_scoped"),
+            "record should branch on use_file_scoped:\n{tokens}"
         );
     }
 
@@ -1803,12 +1826,13 @@ mod tests {
         };
         let tokens = ir.into_token_stream(&config).to_string();
 
-        // Optional properties use a runtime `if is_optional { "" } else { "required " }`
-        // check, so the literal "required " appears in the token stream as a
-        // branch. Verify the guard is correct: `is_optional` should be `true`.
+        // Optional properties use a runtime `if is_optional { "" } else { required_kw }`
+        // check. For an optional field (is_optional=true), the generated code
+        // bakes `true` as the condition. Verify the guard uses `required_kw`
+        // (a runtime variable) and not a hardcoded `"required "` literal.
         assert!(
-            tokens.contains(r#"if true { "" } else { "required " }"#),
-            "C# 11 optional field should guard required behind is_optional=true:\n{tokens}"
+            tokens.contains(r#"if true { "" } else { required_kw }"#),
+            "C# 11 optional field should guard required behind is_optional=true with required_kw:\n{tokens}"
         );
     }
 
@@ -1818,10 +1842,17 @@ mod tests {
         let ir = sample_ir(false, None);
         let tokens = ir.into_token_stream(&config).to_string();
 
-        // C# 9 should not emit `required` modifier.
+        // The generated code now contains runtime branching for the `required`
+        // modifier. The string "required " appears in the `if use_required`
+        // branch regardless of compile-time config. Verify the runtime guard
+        // structure exists and defers the decision to `cfg.target()`.
         assert!(
-            !tokens.contains("required"),
-            "C# 9 record should NOT emit required modifier:\n{tokens}"
+            tokens.contains("use_required"),
+            "record should reference use_required runtime variable:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("cfg . target ()"),
+            "record should branch on cfg.target() at runtime:\n{tokens}"
         );
     }
 
@@ -1849,19 +1880,23 @@ mod tests {
         let ir = sample_enum_ir();
         let tokens = ir.into_token_stream(&config).to_string();
 
-        // Namespace is now a runtime variable bound as `let ns: &str = "Test.Ns";`
-        // and used via `namespace {ns}\n` (block-scoped) in the format template.
+        // Runtime branching: both file-scoped and block-scoped templates
+        // exist in the token stream as branches of `if use_file_scoped`.
         assert!(
             tokens.contains(r#""Test.Ns""#),
-            "C# 9 enum should bind namespace value:\n{tokens}"
+            "enum should bind namespace value:\n{tokens}"
         );
         assert!(
-            !tokens.contains("namespace {ns};"),
-            "C# 9 enum should NOT use file-scoped namespace:\n{tokens}"
+            tokens.contains("namespace {ns};"),
+            "enum should contain file-scoped namespace template branch:\n{tokens}"
         );
         assert!(
-            tokens.contains("namespace {ns}"),
-            "C# 9 enum should contain namespace placeholder:\n{tokens}"
+            tokens.contains("namespace {ns}\\n"),
+            "enum should contain block-scoped namespace template branch:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("use_file_scoped"),
+            "enum should branch on use_file_scoped:\n{tokens}"
         );
     }
 

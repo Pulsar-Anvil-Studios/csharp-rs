@@ -1,16 +1,19 @@
-// Rust guideline compliant 2026-02-14
+// Rust guideline compliant 2026-02-15
 //! Record (sealed record) code generation from struct fields.
 
-use crate::config::{CSharpConfig, CSharpVersion, Serializer};
 use crate::types::{CSharpField, FlattenKind};
 use proc_macro2::TokenStream;
 use quote::quote;
 
 /// Builds a `sealed record` definition token stream from struct fields.
 ///
-/// The returned token stream evaluates at compile time to produce the complete
+/// The returned token stream evaluates at runtime to produce the complete
 /// C# file contents including using directives, namespace, and property
 /// declarations with JSON serializer attributes.
+///
+/// All configuration decisions (serializer library, C# version) are deferred
+/// to runtime via `cfg: &csharp_rs::Config`, which is in scope in the
+/// generated `csharp_definition(cfg)` method body.
 ///
 /// Version-dependent features:
 /// - **C# 10+**: file-scoped namespace (`namespace X;` instead of block).
@@ -19,36 +22,12 @@ pub fn build_record_definition(
     csharp_name: &str,
     ns_expr: &TokenStream,
     fields: &[CSharpField],
-    config: &CSharpConfig,
 ) -> TokenStream {
-    let use_file_scoped_ns = config.target >= CSharpVersion::CSharp10;
-    let use_required = config.target >= CSharpVersion::CSharp11;
-
-    let using_directive = match config.serializer {
-        Serializer::SystemTextJson => "using System.Text.Json.Serialization;",
-        Serializer::Newtonsoft => "using Newtonsoft.Json;",
-    };
-
     let has_hashmap_flatten = fields
         .iter()
         .any(|f| matches!(f.flatten, FlattenKind::HashMap { .. }));
 
-    let extra_using = if has_hashmap_flatten {
-        match config.serializer {
-            Serializer::SystemTextJson => "\nusing System.Text.Json;",
-            Serializer::Newtonsoft => "\nusing Newtonsoft.Json.Linq;",
-        }
-    } else {
-        ""
-    };
-
-    let prop_indent = if use_file_scoped_ns {
-        "    "
-    } else {
-        "        "
-    };
-
-    let field_exprs = build_field_exprs(fields, config, prop_indent, use_required);
+    let field_exprs = build_field_exprs(fields);
     let nullable_checks = super::nullable_ref_check_exprs(fields);
 
     // HashMap flatten fields always contribute nullable (extension data is reference type).
@@ -56,27 +35,14 @@ pub fn build_record_definition(
         .iter()
         .any(|f| matches!(f.flatten, FlattenKind::HashMap { .. }));
 
-    if use_file_scoped_ns {
-        build_file_scoped(
-            using_directive,
-            extra_using,
-            ns_expr,
-            csharp_name,
-            &field_exprs,
-            &nullable_checks,
-            flatten_nullable,
-        )
-    } else {
-        build_block_scoped(
-            using_directive,
-            extra_using,
-            ns_expr,
-            csharp_name,
-            &field_exprs,
-            &nullable_checks,
-            flatten_nullable,
-        )
-    }
+    build_definition_body(
+        ns_expr,
+        csharp_name,
+        &field_exprs,
+        &nullable_checks,
+        flatten_nullable,
+        has_hashmap_flatten,
+    )
 }
 
 /// Builds token stream statements for each record property.
@@ -85,23 +51,11 @@ pub fn build_record_definition(
 /// a pre-existing `field_parts: Vec<String>`. Regular fields push one entry,
 /// flatten-struct fields push entries from the inner type's `csharp_fields()`,
 /// and flatten-HashMap fields push a `[JsonExtensionData]` property.
-fn build_field_exprs(
-    fields: &[CSharpField],
-    config: &CSharpConfig,
-    prop_indent: &str,
-    use_required: bool,
-) -> Vec<TokenStream> {
-    let attr_name = match config.serializer {
-        Serializer::SystemTextJson => "JsonPropertyName",
-        Serializer::Newtonsoft => "JsonProperty",
-    };
-    let required_kw = if use_required { "required " } else { "" };
-
-    let extension_data_type = match config.serializer {
-        Serializer::SystemTextJson => "Dictionary<string, JsonElement>",
-        Serializer::Newtonsoft => "Dictionary<string, JToken>",
-    };
-
+///
+/// Serializer-dependent values (`attr_name`, `extension_data_type`) and
+/// version-dependent values (`required`, `prop_indent`) are resolved at
+/// runtime via variables already in scope from the enclosing generated block.
+fn build_field_exprs(fields: &[CSharpField]) -> Vec<TokenStream> {
     fields
         .iter()
         .map(|f| {
@@ -116,11 +70,11 @@ fn build_field_exprs(
                         field_parts.push({
                             let csharp_type = #type_expr;
                             let nullable = if #is_optional { "?" } else { "" };
-                            let req = if #is_optional { "" } else { #required_kw };
+                            let req = if #is_optional { "" } else { required_kw };
                             format!(
                                 "{indent}[{attr}(\"{json}\")]\n{indent}public {req}{ty}{null} {name} {{ get; init; }}\n",
-                                indent = #prop_indent,
-                                attr = #attr_name,
+                                indent = prop_indent,
+                                attr = attr_name,
                                 json = #json_name,
                                 req = req,
                                 ty = csharp_type,
@@ -142,11 +96,11 @@ fn build_field_exprs(
                                     is_optional,
                                 } => {
                                     let nullable = if is_optional { "?" } else { "" };
-                                    let req = if is_optional { "" } else { #required_kw };
+                                    let req = if is_optional { "" } else { required_kw };
                                     field_parts.push(format!(
                                         "{indent}[{attr}(\"{json}\")]\n{indent}public {req}{ty}{null} {name} {{ get; init; }}\n",
-                                        indent = #prop_indent,
-                                        attr = #attr_name,
+                                        indent = prop_indent,
+                                        attr = attr_name,
                                         json = json_name,
                                         req = req,
                                         ty = type_name,
@@ -157,8 +111,8 @@ fn build_field_exprs(
                                 csharp_rs::CSharpFieldInfo::ExtensionData { .. } => {
                                     field_parts.push(format!(
                                         "{indent}[JsonExtensionData]\n{indent}public {ext_type}? ExtensionData {{ get; set; }}\n",
-                                        indent = #prop_indent,
-                                        ext_type = #extension_data_type,
+                                        indent = prop_indent,
+                                        ext_type = extension_data_type,
                                     ));
                                 }
                             }
@@ -169,8 +123,8 @@ fn build_field_exprs(
                     quote! {
                         field_parts.push(format!(
                             "{indent}[JsonExtensionData]\n{indent}public {ext_type}? ExtensionData {{ get; set; }}\n",
-                            indent = #prop_indent,
-                            ext_type = #extension_data_type,
+                            indent = prop_indent,
+                            ext_type = extension_data_type,
                         ));
                     }
                 }
@@ -179,107 +133,115 @@ fn build_field_exprs(
         .collect()
 }
 
-/// Builds the final token stream using file-scoped namespace (C# 10+).
-fn build_file_scoped(
-    using_directive: &str,
-    extra_using: &str,
+/// Builds the complete definition body with runtime branching for serializer
+/// and C# version.
+///
+/// The generated code resolves `cfg.serializer()` and `cfg.target()` at
+/// runtime to select using directives, attribute names, namespace style,
+/// and the `required` modifier.
+fn build_definition_body(
     ns_expr: &TokenStream,
     csharp_name: &str,
     field_exprs: &[TokenStream],
     nullable_checks: &[TokenStream],
     flatten_nullable: bool,
+    has_hashmap_flatten: bool,
 ) -> TokenStream {
     quote! {
         {
             let ns: &str = #ns_expr;
-            let mut fields = String::new();
-            let mut field_parts: Vec<String> = Vec::new();
-            #(#field_exprs)*
-            for (i, part) in field_parts.iter().enumerate() {
-                if i > 0 {
-                    fields.push('\n');
-                }
-                fields.push_str(part);
-            }
-            let nullable_checks: Vec<bool> = vec![#(#nullable_checks),*];
-            let nullable_directive = if #flatten_nullable || nullable_checks.iter().any(|&x| x) {
-                "#nullable enable\n"
-            } else {
-                ""
-            };
-            format!(
-                concat!(
-                    "// <auto-generated/>\n",
-                    "{nullable}",
-                    "{using}{extra_using}\n",
-                    "\n",
-                    "namespace {ns};\n",
-                    "\n",
-                    "public sealed record {name}\n",
-                    "{{\n",
-                    "{fields}",
-                    "}}\n",
-                ),
-                nullable = nullable_directive,
-                using = #using_directive,
-                extra_using = #extra_using,
-                ns = ns,
-                name = #csharp_name,
-                fields = fields,
-            )
-        }
-    }
-}
 
-/// Builds the final token stream using block-scoped namespace (C# 9).
-fn build_block_scoped(
-    using_directive: &str,
-    extra_using: &str,
-    ns_expr: &TokenStream,
-    csharp_name: &str,
-    field_exprs: &[TokenStream],
-    nullable_checks: &[TokenStream],
-    flatten_nullable: bool,
-) -> TokenStream {
-    quote! {
-        {
-            let ns: &str = #ns_expr;
-            let mut fields = String::new();
+            // Runtime serializer selection
+            let using_directive = match cfg.serializer() {
+                csharp_rs::Serializer::SystemTextJson => "using System.Text.Json.Serialization;",
+                csharp_rs::Serializer::Newtonsoft => "using Newtonsoft.Json;",
+            };
+            let extra_using = if #has_hashmap_flatten {
+                match cfg.serializer() {
+                    csharp_rs::Serializer::SystemTextJson => "\nusing System.Text.Json;",
+                    csharp_rs::Serializer::Newtonsoft => "\nusing Newtonsoft.Json.Linq;",
+                }
+            } else {
+                ""
+            };
+            let attr_name = match cfg.serializer() {
+                csharp_rs::Serializer::SystemTextJson => "JsonPropertyName",
+                csharp_rs::Serializer::Newtonsoft => "JsonProperty",
+            };
+            let extension_data_type = match cfg.serializer() {
+                csharp_rs::Serializer::SystemTextJson => "Dictionary<string, JsonElement>",
+                csharp_rs::Serializer::Newtonsoft => "Dictionary<string, JToken>",
+            };
+
+            // Runtime version selection
+            let use_file_scoped = cfg.target() >= csharp_rs::CSharpVersion::CSharp10;
+            let use_required = cfg.target() >= csharp_rs::CSharpVersion::CSharp11;
+            let required_kw = if use_required { "required " } else { "" };
+            let prop_indent = if use_file_scoped { "    " } else { "        " };
+
+            // Build field parts
             let mut field_parts: Vec<String> = Vec::new();
             #(#field_exprs)*
+
+            let mut fields = String::new();
             for (i, part) in field_parts.iter().enumerate() {
                 if i > 0 {
                     fields.push('\n');
                 }
                 fields.push_str(part);
             }
+
             let nullable_checks: Vec<bool> = vec![#(#nullable_checks),*];
             let nullable_directive = if #flatten_nullable || nullable_checks.iter().any(|&x| x) {
                 "#nullable enable\n"
             } else {
                 ""
             };
-            format!(
-                concat!(
-                    "// <auto-generated/>\n",
-                    "{nullable}",
-                    "{using}{extra_using}\n",
-                    "\n",
-                    "namespace {ns}\n",
-                    "{{\n",
-                    "    public sealed record {name}\n",
-                    "    {{\n",
-                    "{fields}",
-                    "    }}\n",
-                    "}}\n",
-                ),
-                nullable = nullable_directive,
-                using = #using_directive,
-                extra_using = #extra_using,
-                ns = ns,
-                name = #csharp_name,
-                fields = fields,
-            )
+
+            if use_file_scoped {
+                format!(
+                    concat!(
+                        "// <auto-generated/>\n",
+                        "{nullable}",
+                        "{using}{extra_using}\n",
+                        "\n",
+                        "namespace {ns};\n",
+                        "\n",
+                        "public sealed record {name}\n",
+                        "{{\n",
+                        "{fields}",
+                        "}}\n",
+                    ),
+                    nullable = nullable_directive,
+                    using = using_directive,
+                    extra_using = extra_using,
+                    ns = ns,
+                    name = #csharp_name,
+                    fields = fields,
+                )
+            } else {
+                format!(
+                    concat!(
+                        "// <auto-generated/>\n",
+                        "{nullable}",
+                        "{using}{extra_using}\n",
+                        "\n",
+                        "namespace {ns}\n",
+                        "{{\n",
+                        "    public sealed record {name}\n",
+                        "    {{\n",
+                        "{fields}",
+                        "    }}\n",
+                        "}}\n",
+                    ),
+                    nullable = nullable_directive,
+                    using = using_directive,
+                    extra_using = extra_using,
+                    ns = ns,
+                    name = #csharp_name,
+                    fields = fields,
+                )
+            }
         }
     }
 }

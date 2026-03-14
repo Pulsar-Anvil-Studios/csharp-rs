@@ -639,10 +639,10 @@ mod tests {
         let ir =sample_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
-        // The format template in the token stream contains the pattern.
+        // The format template in the token stream uses `{type_kw}` placeholder.
         assert!(
-            tokens.contains("public abstract record"),
-            "should declare abstract record:\n{tokens}"
+            tokens.contains("public abstract {type_kw}"),
+            "should declare abstract type with type_kw placeholder:\n{tokens}"
         );
         assert!(
             tokens.contains(r#"name = "Message""#),
@@ -655,15 +655,15 @@ mod tests {
         let ir =sample_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
-        // Struct/newtype variants use named format params.
+        // Struct/newtype variants use named format params with type_kw.
         assert!(
-            tokens.contains("sealed record {name} : {parent}"),
-            "should contain sealed record pattern for data variants:\n{tokens}"
+            tokens.contains("sealed {type_kw} {name} : {parent}"),
+            "should contain sealed type_kw pattern for data variants:\n{tokens}"
         );
         // Unit variant uses positional format with literal variant name.
         assert!(
-            tokens.contains("public sealed record {} : {};"),
-            "should contain sealed record unit format template:\n{tokens}"
+            tokens.contains("public sealed {} {} : {};"),
+            "should contain sealed unit format template with type_kw:\n{tokens}"
         );
         assert!(
             tokens.contains(r#""Quit""#),
@@ -2419,12 +2419,12 @@ mod tests {
             transparent: true,
         };
         let tokens = ir.into_token_stream().to_string();
-        // In the token stream, format strings preserve `{{ get; init; }}` but
-        // TokenStream::to_string() renders the outer code with spaces: `{ get ; init ; }`.
-        // We check for the format string fragment inside the token stream.
+        // The format string uses `{acc}` for the accessor (init/set), so the
+        // token stream contains `{{ get; {acc}; }}` as the format placeholder.
+        // We check for the Value property pattern with the runtime accessor.
         assert!(
-            tokens.contains("Value {{ get; init; }}"),
-            "transparent record should have Value property:\n{tokens}"
+            tokens.contains("Value {{ get; {acc}; }}"),
+            "transparent record should have Value property with accessor placeholder:\n{tokens}"
         );
     }
 

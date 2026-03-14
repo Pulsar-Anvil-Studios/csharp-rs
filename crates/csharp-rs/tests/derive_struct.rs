@@ -686,3 +686,67 @@ fn transparent_newtype_csharp10_file_scoped() {
         "C# 10 transparent newtype should use file-scoped namespace:\n{def}"
     );
 }
+
+// --- Unity target ---
+
+#[test]
+fn unity_struct_generates_class_not_record() {
+    let cfg = Config::default().with_target(CSharpVersion::Unity);
+    let def = SimpleStruct::csharp_definition(&cfg);
+    assert!(
+        def.contains("public sealed class SimpleStruct"),
+        "Unity should generate sealed class:\n{def}"
+    );
+    assert!(
+        !def.contains("sealed record"),
+        "Unity should NOT generate sealed record:\n{def}"
+    );
+}
+
+#[test]
+fn unity_struct_uses_get_set() {
+    let cfg = Config::default().with_target(CSharpVersion::Unity);
+    let def = SimpleStruct::csharp_definition(&cfg);
+    assert!(
+        def.contains("{ get; set; }"),
+        "Unity should use get; set; accessors:\n{def}"
+    );
+    assert!(
+        !def.contains("get; init;"),
+        "Unity should NOT use get; init;:\n{def}"
+    );
+}
+
+#[test]
+fn unity_struct_no_required_modifier() {
+    let cfg = Config::default().with_target(CSharpVersion::Unity);
+    let def = SimpleStruct::csharp_definition(&cfg);
+    assert!(
+        !def.contains("required"),
+        "Unity should NOT have required modifier:\n{def}"
+    );
+}
+
+#[test]
+fn unity_struct_block_scoped_namespace() {
+    let cfg = Config::default().with_target(CSharpVersion::Unity);
+    let def = SimpleStruct::csharp_definition(&cfg);
+    assert!(
+        !def.contains("namespace Generated;"),
+        "Unity should NOT use file-scoped namespace:\n{def}"
+    );
+    assert!(
+        def.contains("namespace Generated\n{"),
+        "Unity should use block-scoped namespace:\n{def}"
+    );
+}
+
+#[test]
+fn unity_transparent_newtype_uses_class() {
+    let cfg = Config::default().with_target(CSharpVersion::Unity);
+    let def = PlayerId::csharp_definition(&cfg);
+    assert!(
+        def.contains("public sealed class PlayerId"),
+        "Unity transparent newtype should use class:\n{def}"
+    );
+}

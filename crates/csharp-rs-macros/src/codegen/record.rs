@@ -1,11 +1,12 @@
 // Rust guideline compliant 2026-03-14
-//! Record (sealed record) code generation from struct fields.
+//! Record (sealed record / sealed class) code generation from struct fields.
 
 use crate::types::{CSharpField, FlattenKind};
 use proc_macro2::TokenStream;
 use quote::quote;
 
-/// Builds a `sealed record` definition token stream from struct fields.
+/// Builds a `sealed record` (or `sealed class` for Unity) definition token
+/// stream from struct fields.
 ///
 /// The returned token stream evaluates at runtime to produce the complete
 /// C# file contents including using directives, namespace, and property
@@ -18,6 +19,8 @@ use quote::quote;
 /// Version-dependent features:
 /// - **C# 10+**: file-scoped namespace (`namespace X;` instead of block).
 /// - **C# 11+**: `required` modifier on non-optional properties.
+/// - **Unity**: `sealed class` with `{ get; set; }` instead of `sealed record`
+///   with `{ get; init; }`.
 pub fn build_record_definition(
     csharp_name: &str,
     ns_expr: &TokenStream,
@@ -72,7 +75,7 @@ fn build_field_exprs(fields: &[CSharpField]) -> Vec<TokenStream> {
                             let nullable = if #is_optional { "?" } else { "" };
                             let req = if #is_optional { "" } else { required_kw };
                             format!(
-                                "{indent}[{attr}(\"{json}\")]\n{indent}public {req}{ty}{null} {name} {{ get; init; }}\n",
+                                "{indent}[{attr}(\"{json}\")]\n{indent}public {req}{ty}{null} {name} {{ get; {acc}; }}\n",
                                 indent = prop_indent,
                                 attr = attr_name,
                                 json = #json_name,
@@ -80,6 +83,7 @@ fn build_field_exprs(fields: &[CSharpField]) -> Vec<TokenStream> {
                                 ty = csharp_type,
                                 null = nullable,
                                 name = #prop_name,
+                                acc = accessor,
                             )
                         });
                     }
@@ -98,7 +102,7 @@ fn build_field_exprs(fields: &[CSharpField]) -> Vec<TokenStream> {
                                     let nullable = if is_optional { "?" } else { "" };
                                     let req = if is_optional { "" } else { required_kw };
                                     field_parts.push(format!(
-                                        "{indent}[{attr}(\"{json}\")]\n{indent}public {req}{ty}{null} {name} {{ get; init; }}\n",
+                                        "{indent}[{attr}(\"{json}\")]\n{indent}public {req}{ty}{null} {name} {{ get; {acc}; }}\n",
                                         indent = prop_indent,
                                         attr = attr_name,
                                         json = json_name,
@@ -106,6 +110,7 @@ fn build_field_exprs(fields: &[CSharpField]) -> Vec<TokenStream> {
                                         ty = type_name,
                                         null = nullable,
                                         name = property_name,
+                                        acc = accessor,
                                     ));
                                 }
                                 csharp_rs::CSharpFieldInfo::ExtensionData { .. } => {
@@ -165,6 +170,8 @@ pub fn build_transparent_record_definition(
 
             // Runtime version selection
             let use_file_scoped = cfg.target() >= csharp_rs::CSharpVersion::CSharp10;
+            let type_keyword = if cfg.target().uses_records() { "record" } else { "class" };
+            let accessor = if cfg.target().uses_records() { "init" } else { "set" };
             let prop_indent = if use_file_scoped { "    " } else { "        " };
             let base_indent = if use_file_scoped { "    " } else { "        " };
 
@@ -181,9 +188,10 @@ pub fn build_transparent_record_definition(
 
             // Property line (no JSON attribute for transparent records).
             let property = format!(
-                "{indent}public {ty} Value {{ get; init; }}\n",
+                "{indent}public {ty} Value {{ get; {acc}; }}\n",
                 indent = prop_indent,
                 ty = inner_type,
+                acc = accessor,
             );
 
             // Build converter.
@@ -203,7 +211,7 @@ pub fn build_transparent_record_definition(
                      namespace {ns};\n\
                      \n\
                      {attr}\
-                     public sealed record {name}\n\
+                     public sealed {type_kw} {name}\n\
                      {{\n\
                      {property}\
                      {converter}\n\
@@ -211,6 +219,7 @@ pub fn build_transparent_record_definition(
                     using = using_block,
                     ns = ns,
                     attr = converter_attr,
+                    type_kw = type_keyword,
                     name = #csharp_name,
                     property = property,
                     converter = converter_block,
@@ -223,7 +232,7 @@ pub fn build_transparent_record_definition(
                      namespace {ns}\n\
                      {{\n\
                      {attr}\
-                     {ti}public sealed record {name}\n\
+                     {ti}public sealed {type_kw} {name}\n\
                      {ti}{{\n\
                      {property}\
                      {converter}\n\
@@ -233,6 +242,7 @@ pub fn build_transparent_record_definition(
                     ns = ns,
                     ti = "    ",
                     attr = converter_attr,
+                    type_kw = type_keyword,
                     name = #csharp_name,
                     property = property,
                     converter = converter_block,
@@ -349,6 +359,8 @@ fn build_definition_body(
             let use_file_scoped = cfg.target() >= csharp_rs::CSharpVersion::CSharp10;
             let use_required = cfg.target() >= csharp_rs::CSharpVersion::CSharp11;
             let required_kw = if use_required { "required " } else { "" };
+            let type_keyword = if cfg.target().uses_records() { "record" } else { "class" };
+            let accessor = if cfg.target().uses_records() { "init" } else { "set" };
             let prop_indent = if use_file_scoped { "    " } else { "        " };
 
             // Build field parts
@@ -379,7 +391,7 @@ fn build_definition_body(
                         "\n",
                         "namespace {ns};\n",
                         "\n",
-                        "public sealed record {name}\n",
+                        "public sealed {type_kw} {name}\n",
                         "{{\n",
                         "{fields}",
                         "}}\n",
@@ -388,6 +400,7 @@ fn build_definition_body(
                     using = using_directive,
                     extra_using = extra_using,
                     ns = ns,
+                    type_kw = type_keyword,
                     name = #csharp_name,
                     fields = fields,
                 )
@@ -400,7 +413,7 @@ fn build_definition_body(
                         "\n",
                         "namespace {ns}\n",
                         "{{\n",
-                        "    public sealed record {name}\n",
+                        "    public sealed {type_kw} {name}\n",
                         "    {{\n",
                         "{fields}",
                         "    }}\n",
@@ -410,6 +423,7 @@ fn build_definition_body(
                     using = using_directive,
                     extra_using = extra_using,
                     ns = ns,
+                    type_kw = type_keyword,
                     name = #csharp_name,
                     fields = fields,
                 )

@@ -10,7 +10,6 @@ mod codegen;
 mod config;
 mod types;
 
-use config::CSharpConfig;
 use proc_macro::TokenStream;
 
 /// Derives a C# type definition for the annotated Rust type.
@@ -33,12 +32,8 @@ use proc_macro::TokenStream;
 #[proc_macro_derive(CSharp, attributes(csharp, serde))]
 pub fn derive_csharp(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
-
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| String::from("."));
-    let config = CSharpConfig::from_manifest_dir(std::path::Path::new(&manifest_dir));
-
     match types::process_input(&input) {
-        Ok(derived) => derived.into_token_stream(&config).into(),
+        Ok(derived) => derived.into_token_stream().into(),
         Err(err) => err.to_compile_error().into(),
     }
 }

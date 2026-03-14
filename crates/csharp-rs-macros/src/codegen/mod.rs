@@ -1,4 +1,4 @@
-// Rust guideline compliant 2026-02-14
+// Rust guideline compliant 2026-03-14
 //! Token stream generation from the [`DerivedCSharp`] intermediate representation.
 //!
 //! Produces the `impl CSharp for T` block, including `csharp_name()`,
@@ -94,6 +94,9 @@ impl DerivedCSharp {
         let csharp_name = &self.csharp_name;
 
         match &self.kind {
+            DerivedCSharpKind::Record(fields) if self.transparent => {
+                record::build_transparent_record_definition(csharp_name, &ns_expr, fields)
+            }
             DerivedCSharpKind::Record(fields) => {
                 record::build_record_definition(csharp_name, &ns_expr, fields)
             }
@@ -2239,6 +2242,217 @@ mod tests {
         assert!(
             !deps_section.contains("JsonElement"),
             "HashMap flatten should not contribute to dependencies:\n{tokens}"
+        );
+    }
+
+    // --- Transparent record tests ---
+
+    #[test]
+    fn transparent_record_generates_converter() {
+        let ir = DerivedCSharp {
+            rust_ident: quote::format_ident!("UserId"),
+            csharp_name: String::from("UserId"),
+            namespace_override: Some(String::from("Ns")),
+            kind: DerivedCSharpKind::Record(vec![CSharpField {
+                csharp_property_name: String::from("Value"),
+                json_name: String::from("Value"),
+                type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name(cfg) },
+                is_optional: false,
+                flatten: FlattenKind::None,
+            }]),
+            export: false,
+            export_to: None,
+            transparent: true,
+        };
+        let tokens = ir.into_token_stream().to_string();
+        assert!(
+            tokens.contains("Converter"),
+            "transparent record should generate converter:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("JsonConverter"),
+            "transparent record should have JsonConverter attribute:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn transparent_record_no_property_name_attribute() {
+        let ir = DerivedCSharp {
+            rust_ident: quote::format_ident!("UserId"),
+            csharp_name: String::from("UserId"),
+            namespace_override: Some(String::from("Ns")),
+            kind: DerivedCSharpKind::Record(vec![CSharpField {
+                csharp_property_name: String::from("Value"),
+                json_name: String::from("Value"),
+                type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name(cfg) },
+                is_optional: false,
+                flatten: FlattenKind::None,
+            }]),
+            export: false,
+            export_to: None,
+            transparent: true,
+        };
+        let tokens = ir.into_token_stream().to_string();
+        // Transparent records should NOT have [JsonPropertyName] since converter handles
+        // serialization.
+        assert!(
+            !tokens.contains("JsonPropertyName"),
+            "transparent record should not have JsonPropertyName attribute:\n{tokens}"
+        );
+        assert!(
+            !tokens.contains("JsonProperty("),
+            "transparent record should not have JsonProperty attribute:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn transparent_record_stj_has_read_and_write() {
+        let ir = DerivedCSharp {
+            rust_ident: quote::format_ident!("UserId"),
+            csharp_name: String::from("UserId"),
+            namespace_override: Some(String::from("Ns")),
+            kind: DerivedCSharpKind::Record(vec![CSharpField {
+                csharp_property_name: String::from("Value"),
+                json_name: String::from("Value"),
+                type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name(cfg) },
+                is_optional: false,
+                flatten: FlattenKind::None,
+            }]),
+            export: false,
+            export_to: None,
+            transparent: true,
+        };
+        let tokens = ir.into_token_stream().to_string();
+        assert!(
+            tokens.contains("Utf8JsonReader"),
+            "transparent record STJ converter should use Utf8JsonReader:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("Utf8JsonWriter"),
+            "transparent record STJ converter should use Utf8JsonWriter:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("JsonSerializer.Deserialize"),
+            "transparent record STJ Read should use JsonSerializer.Deserialize:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("JsonSerializer.Serialize"),
+            "transparent record STJ Write should use JsonSerializer.Serialize:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn transparent_record_newtonsoft_has_read_json_and_write_json() {
+        let ir = DerivedCSharp {
+            rust_ident: quote::format_ident!("UserId"),
+            csharp_name: String::from("UserId"),
+            namespace_override: Some(String::from("Ns")),
+            kind: DerivedCSharpKind::Record(vec![CSharpField {
+                csharp_property_name: String::from("Value"),
+                json_name: String::from("Value"),
+                type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name(cfg) },
+                is_optional: false,
+                flatten: FlattenKind::None,
+            }]),
+            export: false,
+            export_to: None,
+            transparent: true,
+        };
+        let tokens = ir.into_token_stream().to_string();
+        assert!(
+            tokens.contains("ReadJson"),
+            "transparent record Newtonsoft converter should have ReadJson:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("WriteJson"),
+            "transparent record Newtonsoft converter should have WriteJson:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("serializer.Deserialize"),
+            "transparent record Newtonsoft Read should use serializer.Deserialize:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("serializer.Serialize"),
+            "transparent record Newtonsoft Write should use serializer.Serialize:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn transparent_record_has_using_system() {
+        let ir = DerivedCSharp {
+            rust_ident: quote::format_ident!("UserId"),
+            csharp_name: String::from("UserId"),
+            namespace_override: Some(String::from("Ns")),
+            kind: DerivedCSharpKind::Record(vec![CSharpField {
+                csharp_property_name: String::from("Value"),
+                json_name: String::from("Value"),
+                type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name(cfg) },
+                is_optional: false,
+                flatten: FlattenKind::None,
+            }]),
+            export: false,
+            export_to: None,
+            transparent: true,
+        };
+        let tokens = ir.into_token_stream().to_string();
+        assert!(
+            tokens.contains("using System;"),
+            "transparent record should include using System directive:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn transparent_record_has_value_property() {
+        let ir = DerivedCSharp {
+            rust_ident: quote::format_ident!("UserId"),
+            csharp_name: String::from("UserId"),
+            namespace_override: Some(String::from("Ns")),
+            kind: DerivedCSharpKind::Record(vec![CSharpField {
+                csharp_property_name: String::from("Value"),
+                json_name: String::from("Value"),
+                type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name(cfg) },
+                is_optional: false,
+                flatten: FlattenKind::None,
+            }]),
+            export: false,
+            export_to: None,
+            transparent: true,
+        };
+        let tokens = ir.into_token_stream().to_string();
+        // In the token stream, format strings preserve `{{ get; init; }}` but
+        // TokenStream::to_string() renders the outer code with spaces: `{ get ; init ; }`.
+        // We check for the format string fragment inside the token stream.
+        assert!(
+            tokens.contains("Value {{ get; init; }}"),
+            "transparent record should have Value property:\n{tokens}"
+        );
+    }
+
+    #[test]
+    fn transparent_record_both_serializer_paths() {
+        let ir = DerivedCSharp {
+            rust_ident: quote::format_ident!("UserId"),
+            csharp_name: String::from("UserId"),
+            namespace_override: Some(String::from("Ns")),
+            kind: DerivedCSharpKind::Record(vec![CSharpField {
+                csharp_property_name: String::from("Value"),
+                json_name: String::from("Value"),
+                type_expr: quote! { <String as csharp_rs::CSharp>::csharp_name(cfg) },
+                is_optional: false,
+                flatten: FlattenKind::None,
+            }]),
+            export: false,
+            export_to: None,
+            transparent: true,
+        };
+        let tokens = ir.into_token_stream().to_string();
+        assert!(
+            tokens.contains("System.Text.Json"),
+            "transparent record should contain STJ using path:\n{tokens}"
+        );
+        assert!(
+            tokens.contains("Newtonsoft"),
+            "transparent record should contain Newtonsoft using path:\n{tokens}"
         );
     }
 }

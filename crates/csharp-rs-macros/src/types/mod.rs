@@ -139,7 +139,6 @@ pub struct DerivedCSharp {
     /// Custom export path (overrides config default).
     pub export_to: Option<String>,
     /// Whether the type is `#[serde(transparent)]` (a newtype wrapper).
-    #[allow(dead_code, reason = "consumed by codegen in a follow-up change")]
     pub transparent: bool,
 }
 

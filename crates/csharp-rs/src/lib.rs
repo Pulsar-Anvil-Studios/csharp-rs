@@ -44,6 +44,8 @@ pub enum Serializer {
 /// Target C# language version — controls which syntax features are used.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CSharpVersion {
+    /// Unity C# 9.0 — `sealed class` + `{ get; set; }`, no records or init-only setters.
+    Unity,
     /// C# 9.0 (default) — positional records, block-scoped namespaces.
     #[default]
     CSharp9,
@@ -58,12 +60,33 @@ pub enum CSharpVersion {
 impl std::fmt::Display for CSharpVersion {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
+            Self::Unity => "Unity",
             Self::CSharp9 => "9.0",
             Self::CSharp10 => "10.0",
             Self::CSharp11 => "11.0",
             Self::CSharp12 => "12.0",
         };
         f.write_str(s)
+    }
+}
+
+impl CSharpVersion {
+    /// Whether the target supports file-scoped namespaces (C# 10+, not Unity).
+    #[must_use]
+    pub fn supports_file_scoped_namespace(self) -> bool {
+        self >= Self::CSharp10
+    }
+
+    /// Whether the target supports the `required` modifier (C# 11+, not Unity).
+    #[must_use]
+    pub fn supports_required_modifier(self) -> bool {
+        self >= Self::CSharp11
+    }
+
+    /// Whether the target uses `record` types. Unity uses `class` instead.
+    #[must_use]
+    pub fn uses_records(self) -> bool {
+        self != Self::Unity
     }
 }
 
@@ -428,6 +451,7 @@ mod tests {
 
     #[test]
     fn csharp_version_ordering() {
+        assert!(CSharpVersion::Unity < CSharpVersion::CSharp9);
         assert!(CSharpVersion::CSharp9 < CSharpVersion::CSharp10);
         assert!(CSharpVersion::CSharp10 < CSharpVersion::CSharp11);
         assert!(CSharpVersion::CSharp11 < CSharpVersion::CSharp12);
@@ -435,10 +459,43 @@ mod tests {
 
     #[test]
     fn csharp_version_display() {
+        assert_eq!(CSharpVersion::Unity.to_string(), "Unity");
         assert_eq!(CSharpVersion::CSharp9.to_string(), "9.0");
         assert_eq!(CSharpVersion::CSharp10.to_string(), "10.0");
         assert_eq!(CSharpVersion::CSharp11.to_string(), "11.0");
         assert_eq!(CSharpVersion::CSharp12.to_string(), "12.0");
+    }
+
+    #[test]
+    fn unity_does_not_support_file_scoped_namespace() {
+        assert!(!CSharpVersion::Unity.supports_file_scoped_namespace());
+    }
+
+    #[test]
+    fn unity_does_not_support_required_modifier() {
+        assert!(!CSharpVersion::Unity.supports_required_modifier());
+    }
+
+    #[test]
+    fn unity_does_not_use_records() {
+        assert!(!CSharpVersion::Unity.uses_records());
+    }
+
+    #[test]
+    fn csharp9_uses_records() {
+        assert!(CSharpVersion::CSharp9.uses_records());
+    }
+
+    #[test]
+    fn csharp10_supports_file_scoped() {
+        assert!(CSharpVersion::CSharp10.supports_file_scoped_namespace());
+    }
+
+    #[test]
+    fn csharp11_supports_all_features() {
+        assert!(CSharpVersion::CSharp11.supports_file_scoped_namespace());
+        assert!(CSharpVersion::CSharp11.supports_required_modifier());
+        assert!(CSharpVersion::CSharp11.uses_records());
     }
 
     #[test]

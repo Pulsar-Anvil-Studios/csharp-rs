@@ -84,3 +84,32 @@ jobs:
         run: |
           echo "::error::Coverage threshold not met (minimum 98%)"
           exit 1
+
+  csharp-compilation:
+    name: C# Compilation Verification
+    runs-on: ubuntu-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            9.0.x
+            10.0.x
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-csharp-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-csharp-
+
+      - name: Run C# compilation tests
+        run: cargo test --test csharp_compilation --all-features -- --ignored

@@ -583,3 +583,106 @@ fn csharp_namespace_attr_overrides_config_namespace() {
         "config namespace should NOT appear when attr overrides:\n{def}"
     );
 }
+
+// --- newtype structs ---
+
+#[derive(CSharp)]
+struct UserId(String);
+
+#[test]
+fn newtype_struct_name() {
+    let cfg = Config::default();
+    assert_eq!(UserId::csharp_name(&cfg), "UserId");
+}
+
+#[test]
+fn newtype_struct_has_value_property() {
+    let cfg = Config::default();
+    let def = UserId::csharp_definition(&cfg);
+    assert!(
+        def.contains("public sealed record UserId"),
+        "newtype should generate sealed record:\n{def}"
+    );
+    assert!(
+        def.contains("string Value"),
+        "newtype should have Value property with correct type:\n{def}"
+    );
+}
+
+#[test]
+fn newtype_struct_has_json_property_name() {
+    let cfg = Config::default();
+    let def = UserId::csharp_definition(&cfg);
+    assert!(
+        def.contains("JsonPropertyName"),
+        "non-transparent newtype should have JsonPropertyName:\n{def}"
+    );
+}
+
+// --- transparent newtype ---
+
+#[derive(CSharp)]
+#[serde(transparent)]
+struct PlayerId(String);
+
+#[test]
+fn transparent_newtype_has_converter() {
+    let cfg = Config::default();
+    let def = PlayerId::csharp_definition(&cfg);
+    assert!(
+        def.contains("PlayerIdConverter"),
+        "transparent newtype should have converter:\n{def}"
+    );
+    assert!(
+        def.contains("[JsonConverter(typeof(PlayerIdConverter))]"),
+        "transparent newtype should have converter attribute:\n{def}"
+    );
+}
+
+#[test]
+fn transparent_newtype_no_json_property_on_value() {
+    let cfg = Config::default();
+    let def = PlayerId::csharp_definition(&cfg);
+    assert!(
+        !def.contains("JsonPropertyName"),
+        "transparent newtype should NOT have JsonPropertyName:\n{def}"
+    );
+}
+
+#[test]
+fn transparent_newtype_converter_reads_inner_type() {
+    let cfg = Config::default();
+    let def = PlayerId::csharp_definition(&cfg);
+    assert!(
+        def.contains("Deserialize<string>"),
+        "STJ converter should deserialize inner type:\n{def}"
+    );
+}
+
+#[test]
+fn transparent_newtype_newtonsoft_converter() {
+    let cfg = Config::default().with_serializer(Serializer::Newtonsoft);
+    let def = PlayerId::csharp_definition(&cfg);
+    assert!(
+        def.contains("PlayerIdConverter"),
+        "Newtonsoft transparent newtype should have converter:\n{def}"
+    );
+    assert!(
+        def.contains("ReadJson"),
+        "Newtonsoft converter should have ReadJson:\n{def}"
+    );
+    assert!(
+        def.contains("WriteJson"),
+        "Newtonsoft converter should have WriteJson:\n{def}"
+    );
+}
+
+#[test]
+fn transparent_newtype_csharp10_file_scoped() {
+    let cfg = Config::default().with_target(CSharpVersion::CSharp10);
+    let def = PlayerId::csharp_definition(&cfg);
+    assert!(
+        def.contains("namespace Generated;"),
+        "C# 10 transparent newtype should use file-scoped namespace:\n{def}"
+    );
+}

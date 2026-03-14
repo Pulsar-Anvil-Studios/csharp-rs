@@ -10,8 +10,16 @@ keywords.workspace = true
 categories.workspace = true
 readme.workspace = true
 
+[features]
+chrono-impl = ["dep:chrono"]
+uuid-impl = ["dep:uuid"]
+serde-json-impl = ["dep:serde_json"]
+
 [dependencies]
 csharp-rs-macros = { path = "../csharp-rs-macros" }
+chrono = { workspace = true, optional = true }
+uuid = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 
 [lints]
 workspace = true

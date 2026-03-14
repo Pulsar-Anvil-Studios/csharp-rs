@@ -21,6 +21,8 @@ pub struct ContainerAttr {
     pub content: Option<String>,
     /// Whether the enum is untagged via `#[serde(untagged)]`.
     pub untagged: bool,
+    /// Whether the struct is transparent via `#[serde(transparent)]`.
+    pub transparent: bool,
     /// C# namespace override from `#[csharp(namespace = "...")]`.
     pub namespace: Option<String>,
     /// Whether `#[csharp(export)]` was specified.
@@ -77,6 +79,8 @@ impl ContainerAttr {
                 }
             } else if meta.path.is_ident("untagged") {
                 self.untagged = true;
+            } else if meta.path.is_ident("transparent") {
+                self.transparent = true;
             }
             // Silently ignore other serde attributes (handled by serde itself).
             Ok(())
@@ -168,6 +172,7 @@ mod tests {
         assert_eq!(container.namespace, None);
         assert!(!container.export);
         assert_eq!(container.export_to, None);
+        assert!(!container.transparent);
     }
 
     #[test]
@@ -250,5 +255,23 @@ mod tests {
         let container = ContainerAttr::from_attrs(&attrs).unwrap();
         assert_eq!(container.rename_all, Some(Inflection::Upper));
         assert_eq!(container.rename_all_fields, Some(Inflection::Camel));
+    }
+
+    #[test]
+    fn parse_serde_transparent() {
+        let attrs: Vec<Attribute> = vec![parse_quote!(#[serde(transparent)])];
+        let container = ContainerAttr::from_attrs(&attrs).unwrap();
+        assert!(container.transparent);
+    }
+
+    #[test]
+    fn transparent_with_namespace() {
+        let attrs: Vec<Attribute> = vec![
+            parse_quote!(#[serde(transparent)]),
+            parse_quote!(#[csharp(namespace = "Ids")]),
+        ];
+        let container = ContainerAttr::from_attrs(&attrs).unwrap();
+        assert!(container.transparent);
+        assert_eq!(container.namespace.as_deref(), Some("Ids"));
     }
 }

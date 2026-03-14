@@ -137,6 +137,9 @@ pub struct DerivedCSharp {
     pub export: bool,
     /// Custom export path (overrides config default).
     pub export_to: Option<String>,
+    /// Whether the type is `#[serde(transparent)]` (a newtype wrapper).
+    #[expect(dead_code, reason = "consumed by codegen in a follow-up change")]
+    pub transparent: bool,
 }
 
 /// Processes a `DeriveInput` into a [`DerivedCSharp`] IR.

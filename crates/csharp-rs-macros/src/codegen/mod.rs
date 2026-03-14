@@ -359,6 +359,7 @@ mod tests {
             }]),
             export,
             export_to,
+            transparent: false,
         }
     }
 
@@ -384,6 +385,7 @@ mod tests {
             ]),
             export: false,
             export_to: None,
+            transparent: false,
         }
     }
 
@@ -465,6 +467,7 @@ mod tests {
             kind: DerivedCSharpKind::Record(vec![]),
             export: false,
             export_to: None,
+            transparent: false,
         };
         let tokens = ir.into_token_stream().to_string();
         assert!(
@@ -488,6 +491,7 @@ mod tests {
             }]),
             export: false,
             export_to: None,
+            transparent: false,
         };
         let tokens = ir.into_token_stream().to_string();
         // The generated code uses `if #is_optional { "?" }` so true should appear
@@ -587,6 +591,7 @@ mod tests {
             },
             export: false,
             export_to: None,
+            transparent: false,
         }
     }
 
@@ -887,6 +892,7 @@ mod tests {
             },
             export: false,
             export_to: None,
+            transparent: false,
         };
         let tokens = ir.into_token_stream().to_string();
         assert!(
@@ -1137,6 +1143,7 @@ mod tests {
             },
             export: false,
             export_to: None,
+            transparent: false,
         }
     }
 
@@ -1322,6 +1329,7 @@ mod tests {
             },
             export: false,
             export_to: None,
+            transparent: false,
         }
     }
 
@@ -1511,6 +1519,7 @@ mod tests {
             },
             export: false,
             export_to: None,
+            transparent: false,
         }
     }
 
@@ -1721,6 +1730,7 @@ mod tests {
             }]),
             export: false,
             export_to: None,
+            transparent: false,
         };
         let tokens = ir.into_token_stream().to_string();
 
@@ -1810,6 +1820,7 @@ mod tests {
             }]),
             export: false,
             export_to: None,
+            transparent: false,
         };
         let tokens = ir.into_token_stream().to_string();
 
@@ -1860,6 +1871,7 @@ mod tests {
             },
             export: false,
             export_to: None,
+            transparent: false,
         };
         let tokens = ir.into_token_stream().to_string();
 
@@ -1904,6 +1916,7 @@ mod tests {
             ]),
             export: false,
             export_to: None,
+            transparent: false,
         };
         let tokens = ir.into_token_stream().to_string();
 
@@ -1931,6 +1944,7 @@ mod tests {
             }]),
             export: false,
             export_to: None,
+            transparent: false,
         };
         let tokens = ir.into_token_stream().to_string();
 
@@ -1964,6 +1978,7 @@ mod tests {
             ]),
             export: false,
             export_to: None,
+            transparent: false,
         };
         let tokens = ir.into_token_stream().to_string();
 
@@ -2013,6 +2028,7 @@ mod tests {
             },
             export: false,
             export_to: None,
+            transparent: false,
         };
         let tokens = ir.into_token_stream().to_string();
 
@@ -2066,6 +2082,7 @@ mod tests {
             },
             export: false,
             export_to: None,
+            transparent: false,
         };
         let tokens = ir.into_token_stream().to_string();
 
@@ -2111,6 +2128,7 @@ mod tests {
             },
             export: false,
             export_to: None,
+            transparent: false,
         };
         let tokens = ir.into_token_stream().to_string();
 
@@ -2151,6 +2169,7 @@ mod tests {
             },
             export: false,
             export_to: None,
+            transparent: false,
         };
         let tokens = ir.into_token_stream().to_string();
 
@@ -2207,6 +2226,7 @@ mod tests {
             ]),
             export: false,
             export_to: None,
+            transparent: false,
         };
         let tokens = ir.into_token_stream().to_string();
 

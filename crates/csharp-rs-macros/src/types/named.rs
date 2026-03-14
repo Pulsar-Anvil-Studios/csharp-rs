@@ -115,6 +115,7 @@ pub fn named_struct(
         kind: DerivedCSharpKind::Record(fields),
         export: container.export,
         export_to: container.export_to.clone(),
+        transparent: container.transparent,
     })
 }
 

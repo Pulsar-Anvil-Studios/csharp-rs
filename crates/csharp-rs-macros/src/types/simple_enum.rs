@@ -69,6 +69,7 @@ pub fn simple_enum(
         kind: DerivedCSharpKind::Enum(variants),
         export: container.export,
         export_to: container.export_to.clone(),
+        transparent: false,
     })
 }
 

@@ -210,6 +210,7 @@ pub fn tagged_enum(
         kind: DerivedCSharpKind::TaggedEnum { tagging, variants },
         export: container.export,
         export_to: container.export_to.clone(),
+        transparent: false,
     })
 }
 

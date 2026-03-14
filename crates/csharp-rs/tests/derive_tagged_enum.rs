@@ -3,7 +3,7 @@
 
 #![expect(dead_code, reason = "test enums are only used via derive macro")]
 
-use csharp_rs::{CSharp, Config};
+use csharp_rs::{CSharp, CSharpVersion, Config, Serializer};
 
 // --- internally tagged: struct + unit variants ---
 
@@ -483,5 +483,93 @@ fn untagged_object_has_properties() {
     assert!(
         def.contains("public string Value { get; init; }"),
         "Object should have string Value property:\n{def}"
+    );
+}
+
+// --- multi-config: serializer switching ---
+
+#[test]
+fn tagged_enum_newtonsoft_has_newtonsoft_converter() {
+    let cfg = Config::default().with_serializer(Serializer::Newtonsoft);
+    let def = Message::csharp_definition(&cfg);
+    assert!(
+        def.contains("using Newtonsoft.Json;"),
+        "Newtonsoft tagged enum should have Newtonsoft.Json using:\n{def}"
+    );
+    assert!(
+        def.contains("JObject.Load"),
+        "Newtonsoft converter should use JObject.Load:\n{def}"
+    );
+}
+
+#[test]
+fn tagged_enum_stj_csharp9_uses_converter() {
+    let cfg = Config::default();
+    let def = Message::csharp_definition(&cfg);
+    assert!(
+        def.contains("MessageConverter"),
+        "C# 9 + STJ should use converter path:\n{def}"
+    );
+    assert!(
+        def.contains("JsonDocument.ParseValue"),
+        "C# 9 + STJ converter should use JsonDocument:\n{def}"
+    );
+}
+
+// --- multi-config: C# 11 native polymorphism ---
+
+#[test]
+fn tagged_enum_csharp11_stj_uses_native_polymorphism() {
+    let cfg = Config::default().with_target(CSharpVersion::CSharp11);
+    let def = Message::csharp_definition(&cfg);
+    assert!(
+        def.contains("[JsonPolymorphic"),
+        "C# 11 + STJ should use native [JsonPolymorphic]:\n{def}"
+    );
+    assert!(
+        def.contains("[JsonDerivedType"),
+        "C# 11 + STJ should use [JsonDerivedType]:\n{def}"
+    );
+    assert!(
+        !def.contains("MessageConverter"),
+        "C# 11 + STJ should NOT generate converter class:\n{def}"
+    );
+}
+
+#[test]
+fn tagged_enum_csharp11_newtonsoft_still_uses_converter() {
+    let cfg = Config::default()
+        .with_serializer(Serializer::Newtonsoft)
+        .with_target(CSharpVersion::CSharp11);
+    let def = Message::csharp_definition(&cfg);
+    assert!(
+        def.contains("MessageConverter"),
+        "C# 11 + Newtonsoft should still use converter:\n{def}"
+    );
+    assert!(
+        !def.contains("JsonPolymorphic"),
+        "Newtonsoft should NOT use [JsonPolymorphic]:\n{def}"
+    );
+}
+
+// --- multi-config: C# version switching ---
+
+#[test]
+fn tagged_enum_csharp10_file_scoped_namespace() {
+    let cfg = Config::default().with_target(CSharpVersion::CSharp10);
+    let def = Message::csharp_definition(&cfg);
+    assert!(
+        def.contains("namespace Generated;"),
+        "C# 10 tagged enum should use file-scoped namespace:\n{def}"
+    );
+}
+
+#[test]
+fn tagged_enum_csharp11_has_required_modifier() {
+    let cfg = Config::default().with_target(CSharpVersion::CSharp11);
+    let def = Message::csharp_definition(&cfg);
+    assert!(
+        def.contains("public required string Id"),
+        "C# 11 tagged enum struct variant should have required modifier:\n{def}"
     );
 }

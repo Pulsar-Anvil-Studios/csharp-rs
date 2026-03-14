@@ -3,7 +3,7 @@
 
 #![expect(dead_code, reason = "test enums are only used via derive macro")]
 
-use csharp_rs::{CSharp, Config};
+use csharp_rs::{CSharp, CSharpVersion, Config, Serializer};
 
 // --- simple enum ---
 
@@ -261,5 +261,53 @@ fn enum_dependencies_empty() {
     assert!(
         deps.is_empty(),
         "enum should have no dependencies: {deps:?}"
+    );
+}
+
+// --- multi-config: serializer switching ---
+
+#[test]
+fn enum_newtonsoft_uses_newtonsoft_using() {
+    let cfg = Config::default().with_serializer(Serializer::Newtonsoft);
+    let def = Color::csharp_definition(&cfg);
+    assert!(
+        def.contains("using Newtonsoft.Json;"),
+        "Newtonsoft enum should have Newtonsoft.Json using:\n{def}"
+    );
+    assert!(
+        def.contains("[JsonConverter("),
+        "Newtonsoft enum should have [JsonConverter]:\n{def}"
+    );
+}
+
+#[test]
+fn enum_stj_uses_stj_using() {
+    let cfg = Config::default().with_serializer(Serializer::SystemTextJson);
+    let def = Color::csharp_definition(&cfg);
+    assert!(
+        def.contains("using System.Text.Json.Serialization;"),
+        "STJ enum should have System.Text.Json.Serialization using:\n{def}"
+    );
+}
+
+// --- multi-config: C# version switching ---
+
+#[test]
+fn enum_csharp10_file_scoped_namespace() {
+    let cfg = Config::default().with_target(CSharpVersion::CSharp10);
+    let def = Color::csharp_definition(&cfg);
+    assert!(
+        def.contains("namespace Generated;"),
+        "C# 10 enum should use file-scoped namespace:\n{def}"
+    );
+}
+
+#[test]
+fn enum_csharp9_block_scoped_namespace() {
+    let cfg = Config::default();
+    let def = Color::csharp_definition(&cfg);
+    assert!(
+        !def.contains("namespace Generated;"),
+        "C# 9 enum should NOT use file-scoped namespace:\n{def}"
     );
 }

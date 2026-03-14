@@ -3,7 +3,7 @@
 
 #![expect(dead_code, reason = "test structs are only used via derive macro")]
 
-use csharp_rs::{CSharp, Config};
+use csharp_rs::{CSharp, CSharpVersion, Config, Serializer};
 
 #[derive(CSharp)]
 struct SimpleStruct {
@@ -425,5 +425,115 @@ fn combined_field_attrs() {
     assert!(
         def.contains("[JsonPropertyName(\"displayName\")]"),
         "display_name should use camelCase:\n{def}"
+    );
+}
+
+// --- multi-config: serializer switching ---
+
+#[test]
+fn simple_struct_newtonsoft_uses_json_property() {
+    let cfg = Config::default().with_serializer(Serializer::Newtonsoft);
+    let def = SimpleStruct::csharp_definition(&cfg);
+    assert!(
+        def.contains("[JsonProperty(\"name\")]"),
+        "Newtonsoft should use [JsonProperty]:\n{def}"
+    );
+    assert!(
+        def.contains("using Newtonsoft.Json;"),
+        "Newtonsoft should have Newtonsoft.Json using:\n{def}"
+    );
+    assert!(
+        !def.contains("JsonPropertyName"),
+        "Newtonsoft should NOT contain JsonPropertyName:\n{def}"
+    );
+}
+
+#[test]
+fn simple_struct_stj_uses_json_property_name() {
+    let cfg = Config::default().with_serializer(Serializer::SystemTextJson);
+    let def = SimpleStruct::csharp_definition(&cfg);
+    assert!(
+        def.contains("[JsonPropertyName(\"name\")]"),
+        "STJ should use [JsonPropertyName]:\n{def}"
+    );
+    assert!(
+        def.contains("using System.Text.Json.Serialization;"),
+        "STJ should have System.Text.Json.Serialization using:\n{def}"
+    );
+}
+
+// --- multi-config: C# version switching ---
+
+#[test]
+fn simple_struct_csharp9_block_scoped_namespace() {
+    let cfg = Config::default();
+    let def = SimpleStruct::csharp_definition(&cfg);
+    assert!(
+        !def.contains("namespace Generated;"),
+        "C# 9 should NOT use file-scoped namespace:\n{def}"
+    );
+    assert!(
+        def.contains("namespace Generated\n{"),
+        "C# 9 should use block-scoped namespace:\n{def}"
+    );
+}
+
+#[test]
+fn simple_struct_csharp10_file_scoped_namespace() {
+    let cfg = Config::default().with_target(CSharpVersion::CSharp10);
+    let def = SimpleStruct::csharp_definition(&cfg);
+    assert!(
+        def.contains("namespace Generated;"),
+        "C# 10 should use file-scoped namespace:\n{def}"
+    );
+}
+
+#[test]
+fn simple_struct_csharp11_has_required_modifier() {
+    let cfg = Config::default().with_target(CSharpVersion::CSharp11);
+    let def = SimpleStruct::csharp_definition(&cfg);
+    assert!(
+        def.contains("public required string Name"),
+        "C# 11 non-optional properties should have required modifier:\n{def}"
+    );
+}
+
+#[test]
+fn simple_struct_csharp9_no_required_modifier() {
+    let cfg = Config::default();
+    let def = SimpleStruct::csharp_definition(&cfg);
+    assert!(
+        !def.contains("required"),
+        "C# 9 should NOT have required modifier:\n{def}"
+    );
+}
+
+// --- multi-config: namespace switching ---
+
+#[test]
+fn simple_struct_config_namespace_override() {
+    let cfg = Config::default().with_namespace("Custom.Ns");
+    let def = SimpleStruct::csharp_definition(&cfg);
+    assert!(
+        def.contains("namespace Custom.Ns"),
+        "should use config namespace:\n{def}"
+    );
+    assert!(
+        !def.contains("Generated"),
+        "should NOT contain default namespace:\n{def}"
+    );
+}
+
+#[test]
+fn csharp_namespace_attr_overrides_config_namespace() {
+    let cfg = Config::default().with_namespace("Custom.Ns");
+    let def = GameConfig::csharp_definition(&cfg);
+    assert!(
+        def.contains("namespace PulsarAnvil.Types"),
+        "attribute namespace should take precedence over config:\n{def}"
+    );
+    assert!(
+        !def.contains("Custom.Ns"),
+        "config namespace should NOT appear when attr overrides:\n{def}"
     );
 }

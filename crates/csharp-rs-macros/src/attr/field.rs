@@ -1,13 +1,15 @@
-// Rust guideline compliant 2026-02-14
+// Rust guideline compliant 2026-03-14
 //! Field-level attribute parsing for `#[serde(...)]`.
 //!
 //! Supports `#[serde(rename = "...")]`, `#[serde(skip)]`,
-//! `#[serde(skip_serializing)]`, and `#[serde(skip_serializing_if = "...")]`.
+//! `#[serde(skip_serializing)]`, `#[serde(skip_serializing_if = "...")]`,
+//! and `#[serde(default)]`.
 
 use syn::{Attribute, Lit};
 
 /// Parsed field-level serde attributes.
 #[derive(Debug, Default)]
+#[allow(clippy::struct_excessive_bools, reason = "each bool maps to an independent serde attribute flag")]
 pub struct FieldAttr {
     /// Per-field JSON name override from `#[serde(rename = "...")]`.
     pub rename: Option<String>,
@@ -18,6 +20,8 @@ pub struct FieldAttr {
     pub skip_serializing_if: bool,
     /// Field is flattened into the parent (`serde(flatten)`).
     pub flatten: bool,
+    /// Field has a default value (`serde(default)` or `serde(default = "fn_name")`).
+    pub default: bool,
 }
 
 impl FieldAttr {
@@ -51,6 +55,11 @@ impl FieldAttr {
                 }
                 Some("skip" | "skip_serializing") => self.skip = true,
                 Some("flatten") => self.flatten = true,
+                Some("default") => {
+                    // Consume optional value (e.g., `default = "fn_name"`).
+                    let _ = meta.value().and_then(syn::parse::ParseBuffer::parse::<Lit>);
+                    self.default = true;
+                }
                 Some("skip_serializing_if") => {
                     // Consume the value (predicate path) but only track the flag.
                     let value = meta.value()?;
@@ -133,7 +142,7 @@ mod tests {
 
     #[test]
     fn unknown_serde_attrs_ignored() {
-        let attrs: Vec<Attribute> = vec![parse_quote!(#[serde(default)])];
+        let attrs: Vec<Attribute> = vec![parse_quote!(#[serde(deny_unknown_fields)])];
         let field_attr = FieldAttr::from_attrs(&attrs).unwrap();
         assert!(field_attr.rename.is_none());
         assert!(!field_attr.skip);
@@ -154,5 +163,22 @@ mod tests {
         let field_attr = FieldAttr::from_attrs(&attrs).unwrap();
         assert!(field_attr.flatten);
         assert!(field_attr.skip);
+    }
+
+    #[test]
+    fn parse_serde_default() {
+        let attrs: Vec<Attribute> = vec![parse_quote!(#[serde(default)])];
+        let field_attr = FieldAttr::from_attrs(&attrs).unwrap();
+        assert!(field_attr.default);
+        assert!(!field_attr.skip);
+    }
+
+    #[test]
+    fn default_and_skip_serializing_if_both_set() {
+        let attrs: Vec<Attribute> =
+            vec![parse_quote!(#[serde(default, skip_serializing_if = "Option::is_none")])];
+        let field_attr = FieldAttr::from_attrs(&attrs).unwrap();
+        assert!(field_attr.default);
+        assert!(field_attr.skip_serializing_if);
     }
 }

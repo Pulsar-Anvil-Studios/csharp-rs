@@ -1,10 +1,11 @@
-// Rust guideline compliant 2026-02-14
+// Rust guideline compliant 2026-03-14
 //! Type dispatch and intermediate representation for C# code generation.
 //!
 //! Dispatches `syn::DeriveInput` to the appropriate handler based on the
 //! Rust data structure kind (struct with named fields, enum, etc.).
 
 pub mod named;
+pub mod newtype;
 pub mod simple_enum;
 pub mod tagged_enum;
 
@@ -138,7 +139,7 @@ pub struct DerivedCSharp {
     /// Custom export path (overrides config default).
     pub export_to: Option<String>,
     /// Whether the type is `#[serde(transparent)]` (a newtype wrapper).
-    #[expect(dead_code, reason = "consumed by codegen in a follow-up change")]
+    #[allow(dead_code, reason = "consumed by codegen in a follow-up change")]
     pub transparent: bool,
 }
 
@@ -157,12 +158,18 @@ pub fn process_input(input: &DeriveInput) -> syn::Result<DerivedCSharp> {
         }) => named::named_struct(input, named, &container),
 
         Data::Struct(DataStruct {
-            fields: Fields::Unnamed(_),
+            fields: Fields::Unnamed(fields),
             ..
-        }) => Err(syn::Error::new_spanned(
-            &input.ident,
-            "csharp-rs: tuple structs are not yet supported",
-        )),
+        }) => {
+            if fields.unnamed.len() == 1 {
+                newtype::newtype_struct(input, fields, &container)
+            } else {
+                Err(syn::Error::new_spanned(
+                    &input.ident,
+                    "csharp-rs: tuple structs with multiple fields are not supported",
+                ))
+            }
+        }
 
         Data::Struct(DataStruct {
             fields: Fields::Unit,
@@ -214,16 +221,25 @@ mod tests {
     }
 
     #[test]
-    fn tuple_struct_errors() {
+    fn newtype_struct_succeeds() {
         let input: DeriveInput = parse_quote! {
-            struct Wrapper(String);
+            struct UserId(String);
         };
         let result = process_input(&input);
-        assert!(result.is_err());
+        assert!(result.is_ok(), "newtype struct should be supported");
+    }
+
+    #[test]
+    fn multi_field_tuple_struct_errors() {
+        let input: DeriveInput = parse_quote! {
+            struct Point(f64, f64);
+        };
+        let result = process_input(&input);
+        assert!(result.is_err(), "multi-field tuple struct should error");
         let err = result.unwrap_err().to_string();
         assert!(
-            err.contains("tuple structs"),
-            "error should mention tuple structs: {err}"
+            err.contains("tuple structs with multiple fields"),
+            "error should mention multi-field tuple structs: {err}"
         );
     }
 

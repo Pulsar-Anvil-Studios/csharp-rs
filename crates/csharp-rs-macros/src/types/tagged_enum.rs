@@ -107,6 +107,13 @@ fn process_struct_fields(
         let (is_optional, type_expr) = analyze_type(&field.ty);
         let is_optional = is_optional || field_attr.skip_serializing_if || field_attr.default;
 
+        // Apply explicit C# type override if specified via #[csharp(type = "...")].
+        let type_expr = if let Some(ref override_type) = field_attr.type_override {
+            quote::quote! { String::from(#override_type) }
+        } else {
+            type_expr
+        };
+
         result.push(CSharpField {
             csharp_property_name,
             json_name,

@@ -415,6 +415,29 @@ fn serde_default_makes_field_nullable() {
     );
 }
 
+// --- csharp type override ---
+
+#[derive(CSharp)]
+struct WithTypeOverride {
+    name: String,
+    #[csharp(type = "JsonElement")]
+    data: String,
+}
+
+#[test]
+fn csharp_type_override_replaces_csharp_type() {
+    let cfg = Config::default();
+    let def = WithTypeOverride::csharp_definition(&cfg);
+    assert!(
+        def.contains("JsonElement Data"),
+        "type override should replace C# type:\n{def}"
+    );
+    assert!(
+        !def.contains("string Data"),
+        "original type should not appear:\n{def}"
+    );
+}
+
 // --- combined field attrs ---
 
 #[derive(CSharp)]

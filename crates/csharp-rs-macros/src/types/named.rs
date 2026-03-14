@@ -92,6 +92,13 @@ pub fn named_struct(
         let (is_optional, type_expr) = analyze_type(&field.ty);
         let is_optional = is_optional || field_attr.skip_serializing_if || field_attr.default;
 
+        // Apply explicit C# type override if specified via #[csharp(type = "...")].
+        let type_expr = if let Some(ref override_type) = field_attr.type_override {
+            quote! { String::from(#override_type) }
+        } else {
+            type_expr
+        };
+
         fields.push(CSharpField {
             csharp_property_name,
             json_name,
@@ -468,6 +475,28 @@ mod tests {
             "rename_all_fields camelCase should override rename_all UPPERCASE for fields"
         );
         assert_eq!(fields[1].json_name, "highScore");
+    }
+
+    #[test]
+    fn type_override_replaces_type_expr() {
+        let input: DeriveInput = parse_quote! {
+            struct Foo {
+                #[csharp(type = "JsonElement")]
+                data: String,
+            }
+        };
+        let ir = process_named(&input);
+        let fields = extract_fields(&ir);
+        assert_eq!(fields.len(), 1);
+        let tokens = fields[0].type_expr.to_string();
+        assert!(
+            tokens.contains("JsonElement"),
+            "type_expr should contain override string:\n{tokens}"
+        );
+        assert!(
+            !tokens.contains("csharp_rs"),
+            "type_expr should NOT contain trait call:\n{tokens}"
+        );
     }
 
     #[test]

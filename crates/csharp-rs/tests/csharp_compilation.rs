@@ -262,9 +262,13 @@ fn compile_all_types(
 
     std::fs::write(dir.join("CompileTest.csproj"), csproj).expect("write csproj");
 
-    // Run dotnet build.
+    // Run dotnet build. Suppress first-time setup to avoid race conditions
+    // when multiple tests run in parallel.
     let output = std::process::Command::new("dotnet")
         .args(["build", "--nologo", "--verbosity", "quiet"])
+        .env("DOTNET_SKIP_FIRST_TIME_EXPERIENCE", "1")
+        .env("DOTNET_NOLOGO", "1")
+        .env("DOTNET_CLI_TELEMETRY_OPTOUT", "1")
         .current_dir(&dir)
         .output()
         .expect("run dotnet build");

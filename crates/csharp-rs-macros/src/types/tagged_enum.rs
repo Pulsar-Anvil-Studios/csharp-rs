@@ -94,10 +94,7 @@ fn process_struct_fields(
             renamed.clone()
         } else {
             let inflection = container.rename_all_fields.or(container.rename_all);
-            inflection.map_or_else(
-                || field_name.clone(),
-                |inf| inf.apply(&field_name),
-            )
+            inflection.map_or_else(|| field_name.clone(), |inf| inf.apply(&field_name))
         };
 
         // C# property name: always PascalCase.

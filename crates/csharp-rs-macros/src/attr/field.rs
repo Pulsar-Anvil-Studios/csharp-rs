@@ -9,7 +9,10 @@ use syn::{Attribute, Lit};
 
 /// Parsed field-level serde attributes.
 #[derive(Debug, Default)]
-#[allow(clippy::struct_excessive_bools, reason = "each bool maps to an independent serde attribute flag")]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool maps to an independent serde attribute flag"
+)]
 pub struct FieldAttr {
     /// Per-field JSON name override from `#[serde(rename = "...")]`.
     pub rename: Option<String>,
@@ -94,10 +97,10 @@ impl FieldAttr {
                     self.type_override = Some(lit_str.value());
                 }
             } else {
-                let ident = meta.path.get_ident().map_or_else(
-                    || String::from("<unknown>"),
-                    ToString::to_string,
-                );
+                let ident = meta
+                    .path
+                    .get_ident()
+                    .map_or_else(|| String::from("<unknown>"), ToString::to_string);
                 return Err(meta.error(format!("unknown csharp field attribute `{ident}`")));
             }
             Ok(())

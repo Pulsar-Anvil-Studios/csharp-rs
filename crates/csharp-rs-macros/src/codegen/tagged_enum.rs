@@ -137,7 +137,10 @@ fn csharp_safe_var_name(name: &str) -> String {
 /// - **C# 11+ with STJ and internal tagging**: native polymorphism via
 ///   `[JsonPolymorphic]` / `[JsonDerivedType]` attributes instead of a
 ///   custom `JsonConverter<T>`.
-#[expect(clippy::too_many_lines, reason = "orchestrates all tagged enum codegen branches")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "orchestrates all tagged enum codegen branches"
+)]
 pub fn build_tagged_enum_definition(
     csharp_name: &str,
     ns_expr: &TokenStream,
@@ -185,6 +188,8 @@ pub fn build_tagged_enum_definition(
                 && cfg.target() >= csharp_rs::CSharpVersion::CSharp11;
 
             let required_kw = if use_required { "required " } else { "" };
+            let type_kw = if cfg.target().uses_records() { "record" } else { "class" };
+            let accessor = if cfg.target().uses_records() { "init" } else { "set" };
             let base_indent = if use_file_scoped { "    " } else { "        " };
             let prop_indent = format!("{}    ", base_indent);
 
@@ -201,17 +206,17 @@ pub fn build_tagged_enum_definition(
             // Using directives
             let using_block = if use_native_polymorphism {
                 if #has_hashmap_flatten {
-                    "using System.Text.Json;\nusing System.Text.Json.Serialization;"
+                    "using System.Collections.Generic;\nusing System.Linq;\nusing System.Text.Json;\nusing System.Text.Json.Serialization;"
                 } else {
-                    "using System.Text.Json.Serialization;"
+                    "using System.Collections.Generic;\nusing System.Linq;\nusing System.Text.Json.Serialization;"
                 }
             } else {
                 match cfg.serializer() {
                     csharp_rs::Serializer::SystemTextJson => {
-                        "using System;\nusing System.Text.Json;\nusing System.Text.Json.Serialization;"
+                        "using System;\nusing System.Collections.Generic;\nusing System.Linq;\nusing System.Text.Json;\nusing System.Text.Json.Serialization;"
                     }
                     csharp_rs::Serializer::Newtonsoft => {
-                        "using Newtonsoft.Json;\nusing Newtonsoft.Json.Linq;"
+                        "using System;\nusing System.Collections.Generic;\nusing System.Linq;\nusing Newtonsoft.Json;\nusing Newtonsoft.Json.Linq;"
                     }
                 }
             };
@@ -262,11 +267,12 @@ pub fn build_tagged_enum_definition(
                      namespace {ns};\n\
                      \n\
                      {attrs}\n\
-                     public abstract record {name}{body}\n",
+                     public abstract {type_kw} {name}{body}\n",
                     nullable = nullable_directive,
                     using = using_block,
                     ns = ns,
                     attrs = class_attrs,
+                    type_kw = type_kw,
                     name = #csharp_name,
                     body = body,
                 )
@@ -279,13 +285,14 @@ pub fn build_tagged_enum_definition(
                      namespace {ns}\n\
                      {{\n\
                      {ti}{attrs}\n\
-                     {ti}public abstract record {name}{body}\n\
+                     {ti}public abstract {type_kw} {name}{body}\n\
                      }}\n",
                     nullable = nullable_directive,
                     using = using_block,
                     ns = ns,
                     ti = type_indent,
                     attrs = class_attrs,
+                    type_kw = type_kw,
                     name = #csharp_name,
                     body = body,
                 )
@@ -366,8 +373,14 @@ fn build_single_variant(parent_name: &str, variant: &TaggedVariant) -> TokenStre
     match &variant.data {
         TaggedVariantData::Unit => {
             // Unit variant: `public sealed record Quit : Message;`
+            // (or `public sealed class Quit : Message { }` for Unity, since classes
+            // cannot use the semicolon shorthand)
             quote! {
-                format!("{}public sealed record {} : {};", base_indent, #variant_name, #parent_name)
+                if type_kw == "record" {
+                    format!("{}public sealed record {} : {};", base_indent, #variant_name, #parent_name)
+                } else {
+                    format!("{}public sealed class {} : {} {{ }}", base_indent, #variant_name, #parent_name)
+                }
             }
         }
         TaggedVariantData::Newtype { type_expr } => {
@@ -376,18 +389,20 @@ fn build_single_variant(parent_name: &str, variant: &TaggedVariant) -> TokenStre
                 {
                     let csharp_type = #type_expr;
                     format!(
-                        "{base}public sealed record {name} : {parent}\n\
+                        "{base}public sealed {type_kw} {name} : {parent}\n\
                          {base}{{\n\
                          {prop}[{attr}(\"Value\")]\n\
-                         {prop}public {req}{ty} Value {{ get; init; }}\n\
+                         {prop}public {req}{ty} Value {{ get; {acc}; }}\n\
                          {base}}}",
                         base = base_indent,
+                        type_kw = type_kw,
                         name = #variant_name,
                         parent = #parent_name,
                         prop = prop_indent,
                         attr = attr_name,
                         req = required_kw,
                         ty = csharp_type,
+                        acc = accessor,
                     )
                 }
             }
@@ -415,11 +430,12 @@ fn build_struct_variant(
             #(#field_exprs)*
             let fields_block = field_parts.join("\n");
             format!(
-                "{base}public sealed record {name} : {parent}\n\
+                "{base}public sealed {type_kw} {name} : {parent}\n\
                  {base}{{\n\
                  {fields}\n\
                  {base}}}",
                 base = base_indent,
+                type_kw = type_kw,
                 name = #variant_name,
                 parent = #parent_name,
                 fields = fields_block,
@@ -454,7 +470,7 @@ fn build_struct_variant_fields(fields: &[CSharpField]) -> Vec<TokenStream> {
                         let req = if #is_optional { "" } else { required_kw };
                         format!(
                             "{prop}[{attr}(\"{json}\")]\n\
-                             {prop}public {req}{ty}{null} {name} {{ get; init; }}",
+                             {prop}public {req}{ty}{null} {name} {{ get; {acc}; }}",
                             prop = prop_indent,
                             attr = attr_name,
                             json = #json_name,
@@ -462,6 +478,7 @@ fn build_struct_variant_fields(fields: &[CSharpField]) -> Vec<TokenStream> {
                             ty = csharp_type,
                             null = nullable,
                             name = #prop_name,
+                            acc = accessor,
                         )
                     });
                 }
@@ -481,7 +498,7 @@ fn build_struct_variant_fields(fields: &[CSharpField]) -> Vec<TokenStream> {
                                 let req = if is_optional { "" } else { required_kw };
                                 field_parts.push(format!(
                                     "{prop}[{attr}(\"{json}\")]\n\
-                                     {prop}public {req}{ty}{null} {name} {{ get; init; }}",
+                                     {prop}public {req}{ty}{null} {name} {{ get; {acc}; }}",
                                     prop = prop_indent,
                                     attr = attr_name,
                                     json = json_name,
@@ -489,6 +506,7 @@ fn build_struct_variant_fields(fields: &[CSharpField]) -> Vec<TokenStream> {
                                     ty = type_name,
                                     null = nullable,
                                     name = property_name,
+                                    acc = accessor,
                                 ));
                             }
                             csharp_rs::CSharpFieldInfo::ExtensionData { .. } => {
@@ -678,8 +696,7 @@ fn build_converter_block(
         }
         EnumTagging::External => {
             let stj_converter = build_external_stj_converter(csharp_name, variants);
-            let newtonsoft_converter =
-                build_external_newtonsoft_converter(csharp_name, variants);
+            let newtonsoft_converter = build_external_newtonsoft_converter(csharp_name, variants);
 
             quote! {
                 match cfg.serializer() {
@@ -689,8 +706,7 @@ fn build_converter_block(
             }
         }
         EnumTagging::Adjacent { tag, content } => {
-            let stj_converter =
-                build_adjacent_stj_converter(csharp_name, tag, content, variants);
+            let stj_converter = build_adjacent_stj_converter(csharp_name, tag, content, variants);
             let newtonsoft_converter =
                 build_adjacent_newtonsoft_converter(csharp_name, tag, content, variants);
 
@@ -703,8 +719,7 @@ fn build_converter_block(
         }
         EnumTagging::Untagged => {
             let stj_converter = build_untagged_stj_converter(csharp_name, variants);
-            let newtonsoft_converter =
-                build_untagged_newtonsoft_converter(csharp_name, variants);
+            let newtonsoft_converter = build_untagged_newtonsoft_converter(csharp_name, variants);
 
             quote! {
                 match cfg.serializer() {
@@ -1202,11 +1217,7 @@ fn build_newtonsoft_write_arm_internal(variant: &TaggedVariant, tag: &str) -> To
 /// (e.g., `{"Text": "hello"}` or `{"Request": {"id": "abc"}}`).
 ///
 /// References runtime variable `base_indent` which must be in scope.
-#[expect(clippy::too_many_lines, reason = "builds complete STJ converter with read/write arms")]
-fn build_external_stj_converter(
-    csharp_name: &str,
-    variants: &[TaggedVariant],
-) -> TokenStream {
+fn build_external_stj_converter(csharp_name: &str, variants: &[TaggedVariant]) -> TokenStream {
     let read_unit_arms: Vec<TokenStream> = variants
         .iter()
         .filter(|v| matches!(v.data, TaggedVariantData::Unit))
@@ -1224,10 +1235,7 @@ fn build_external_stj_converter(
         })
         .collect();
 
-    let write_arms: Vec<TokenStream> = variants
-        .iter()
-        .map(build_external_stj_write_arm)
-        .collect();
+    let write_arms: Vec<TokenStream> = variants.iter().map(build_external_stj_write_arm).collect();
 
     quote! {
         {
@@ -1342,10 +1350,7 @@ fn build_external_stj_read_unit_arm(variant: &TaggedVariant) -> TokenStream {
 ///
 /// References runtime variables `converter_arm_indent` and
 /// `converter_prop_indent` which must be in scope.
-fn build_external_stj_read_object_arm(
-    variant: &TaggedVariant,
-    read_fmt: &str,
-) -> TokenStream {
+fn build_external_stj_read_object_arm(variant: &TaggedVariant, read_fmt: &str) -> TokenStream {
     let json_name = &variant.json_name;
     let csharp_name = &variant.csharp_name;
 
@@ -1474,7 +1479,10 @@ fn build_external_stj_write_arm(variant: &TaggedVariant) -> TokenStream {
 /// Builds the Newtonsoft `JsonConverter<T>` for externally tagged enums.
 ///
 /// References runtime variable `base_indent` which must be in scope.
-#[expect(clippy::too_many_lines, reason = "builds complete Newtonsoft converter with read/write arms")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "builds complete Newtonsoft converter with read/write arms"
+)]
 fn build_external_newtonsoft_converter(
     csharp_name: &str,
     variants: &[TaggedVariant],
@@ -1834,10 +1842,7 @@ fn build_adjacent_stj_converter(
 ///
 /// References runtime variables `converter_arm_indent` and
 /// `converter_prop_indent` which must be in scope.
-fn build_adjacent_stj_read_arm(
-    variant: &TaggedVariant,
-    content: &str,
-) -> TokenStream {
+fn build_adjacent_stj_read_arm(variant: &TaggedVariant, content: &str) -> TokenStream {
     let json_name = &variant.json_name;
     let csharp_name = &variant.csharp_name;
 
@@ -1902,11 +1907,7 @@ fn build_adjacent_stj_read_arm(
 ///
 /// References runtime variables `converter_arm_indent`,
 /// `converter_body_indent`, and `serialize_call` which must be in scope.
-fn build_adjacent_stj_write_arm(
-    variant: &TaggedVariant,
-    tag: &str,
-    content: &str,
-) -> TokenStream {
+fn build_adjacent_stj_write_arm(variant: &TaggedVariant, tag: &str, content: &str) -> TokenStream {
     let json_name = &variant.json_name;
     let csharp_name = &variant.csharp_name;
     let var_name = csharp_safe_var_name(&variant.csharp_name);
@@ -2079,10 +2080,7 @@ fn build_adjacent_newtonsoft_converter(
 ///
 /// References runtime variables `converter_arm_indent` and
 /// `converter_prop_indent` which must be in scope.
-fn build_adjacent_newtonsoft_read_arm(
-    variant: &TaggedVariant,
-    content: &str,
-) -> TokenStream {
+fn build_adjacent_newtonsoft_read_arm(variant: &TaggedVariant, content: &str) -> TokenStream {
     let json_name = &variant.json_name;
     let csharp_name = &variant.csharp_name;
 
@@ -2244,19 +2242,13 @@ fn build_adjacent_newtonsoft_write_arm(
 /// declaration order using try/catch.
 ///
 /// References runtime variable `base_indent` which must be in scope.
-fn build_untagged_stj_converter(
-    csharp_name: &str,
-    variants: &[TaggedVariant],
-) -> TokenStream {
+fn build_untagged_stj_converter(csharp_name: &str, variants: &[TaggedVariant]) -> TokenStream {
     let read_attempts: Vec<TokenStream> = variants
         .iter()
         .map(build_untagged_stj_read_attempt)
         .collect();
 
-    let write_arms: Vec<TokenStream> = variants
-        .iter()
-        .map(build_untagged_stj_write_arm)
-        .collect();
+    let write_arms: Vec<TokenStream> = variants.iter().map(build_untagged_stj_write_arm).collect();
 
     quote! {
         {

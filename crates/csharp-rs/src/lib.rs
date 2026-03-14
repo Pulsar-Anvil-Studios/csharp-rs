@@ -879,19 +879,13 @@ mod serde_json_tests {
     #[test]
     fn serde_json_value_newtonsoft_maps_to_jtoken() {
         let cfg = Config::default().with_serializer(Serializer::Newtonsoft);
-        assert_eq!(
-            <serde_json::Value as CSharp>::csharp_name(&cfg),
-            "JToken"
-        );
+        assert_eq!(<serde_json::Value as CSharp>::csharp_name(&cfg), "JToken");
     }
 
     #[test]
     fn serde_json_number_maps_to_double() {
         let cfg = Config::default();
-        assert_eq!(
-            <serde_json::Number as CSharp>::csharp_name(&cfg),
-            "double"
-        );
+        assert_eq!(<serde_json::Number as CSharp>::csharp_name(&cfg), "double");
     }
 
     #[test]

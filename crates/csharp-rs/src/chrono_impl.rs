@@ -3,7 +3,7 @@
 //!
 //! Enabled by the `chrono-impl` feature.
 
-use crate::{Config, CSharp};
+use crate::{CSharp, Config};
 
 impl_csharp_primitive!(chrono::NaiveDate, "DateOnly");
 impl_csharp_primitive!(chrono::NaiveTime, "TimeOnly");

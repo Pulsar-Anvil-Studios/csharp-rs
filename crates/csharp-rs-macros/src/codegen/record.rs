@@ -335,8 +335,8 @@ fn build_definition_body(
 
             // Runtime serializer selection
             let using_directive = match cfg.serializer() {
-                csharp_rs::Serializer::SystemTextJson => "using System.Text.Json.Serialization;",
-                csharp_rs::Serializer::Newtonsoft => "using Newtonsoft.Json;",
+                csharp_rs::Serializer::SystemTextJson => "using System.Collections.Generic;\nusing System.Text.Json.Serialization;",
+                csharp_rs::Serializer::Newtonsoft => "using System.Collections.Generic;\nusing Newtonsoft.Json;",
             };
             let extra_using = if #has_hashmap_flatten {
                 match cfg.serializer() {

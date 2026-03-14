@@ -87,7 +87,10 @@ mod tests {
         let ir = process_newtype(&input);
         match &ir.kind {
             DerivedCSharpKind::Record(fields) => {
-                assert!(fields[0].is_optional, "Option inner type should be optional");
+                assert!(
+                    fields[0].is_optional,
+                    "Option inner type should be optional"
+                );
             }
             _ => panic!("expected Record kind"),
         }

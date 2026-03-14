@@ -79,10 +79,7 @@ pub fn named_struct(
             renamed.clone()
         } else {
             let inflection = container.rename_all_fields.or(container.rename_all);
-            inflection.map_or_else(
-                || field_name.clone(),
-                |inf| inf.apply(&field_name),
-            )
+            inflection.map_or_else(|| field_name.clone(), |inf| inf.apply(&field_name))
         };
 
         // C# property name: always PascalCase
@@ -390,7 +387,10 @@ mod tests {
         let fields = extract_fields(&ir);
         assert_eq!(fields.len(), 2);
         assert!(!fields[0].is_optional, "name should not be optional");
-        assert!(fields[1].is_optional, "level with default should be optional");
+        assert!(
+            fields[1].is_optional,
+            "level with default should be optional"
+        );
     }
 
     #[test]

@@ -35,7 +35,7 @@ pub fn build_enum_definition(
                     "using System.Runtime.Serialization;\nusing System.Text.Json.Serialization;"
                 }
                 csharp_rs::Serializer::Newtonsoft => {
-                    "using Newtonsoft.Json;\nusing System.Runtime.Serialization;"
+                    "using Newtonsoft.Json;\nusing Newtonsoft.Json.Converters;\nusing System.Runtime.Serialization;"
                 }
             };
             let converter_type = match cfg.serializer() {

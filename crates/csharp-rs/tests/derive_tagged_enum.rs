@@ -577,7 +577,11 @@ fn tagged_enum_csharp11_has_required_modifier() {
 // --- rename_all_fields applies to variant struct fields independently ---
 
 #[derive(CSharp)]
-#[serde(tag = "type", rename_all = "UPPERCASE", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "UPPERCASE",
+    rename_all_fields = "camelCase"
+)]
 enum ApiEvent {
     UserLogin {
         user_name: String,
@@ -614,5 +618,59 @@ fn rename_all_fields_does_not_affect_variant_names() {
     assert!(
         def.contains("sealed record UserLogin : ApiEvent"),
         "C# variant name should remain PascalCase:\n{def}"
+    );
+}
+
+// --- Unity target ---
+
+#[test]
+fn unity_tagged_enum_generates_class_not_record() {
+    let cfg = Config::default().with_target(CSharpVersion::Unity);
+    let def = Message::csharp_definition(&cfg);
+    assert!(
+        def.contains("public abstract class Message"),
+        "Unity tagged enum should generate abstract class:\n{def}"
+    );
+    assert!(
+        !def.contains("abstract record"),
+        "Unity should NOT generate abstract record:\n{def}"
+    );
+}
+
+#[test]
+fn unity_tagged_enum_variants_use_class() {
+    let cfg = Config::default().with_target(CSharpVersion::Unity);
+    let def = Message::csharp_definition(&cfg);
+    assert!(
+        def.contains("sealed class Request : Message"),
+        "Unity variant should be sealed class:\n{def}"
+    );
+    assert!(
+        def.contains("sealed class Quit : Message"),
+        "Unity unit variant should be sealed class:\n{def}"
+    );
+}
+
+#[test]
+fn unity_tagged_enum_uses_get_set() {
+    let cfg = Config::default().with_target(CSharpVersion::Unity);
+    let def = Message::csharp_definition(&cfg);
+    assert!(
+        def.contains("{ get; set; }"),
+        "Unity tagged enum should use get; set;:\n{def}"
+    );
+    assert!(
+        !def.contains("get; init;"),
+        "Unity should NOT use get; init;:\n{def}"
+    );
+}
+
+#[test]
+fn unity_tagged_enum_no_required_modifier() {
+    let cfg = Config::default().with_target(CSharpVersion::Unity);
+    let def = Message::csharp_definition(&cfg);
+    assert!(
+        !def.contains("required"),
+        "Unity should NOT have required modifier:\n{def}"
     );
 }

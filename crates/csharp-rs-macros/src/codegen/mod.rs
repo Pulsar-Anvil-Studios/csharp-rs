@@ -104,12 +104,7 @@ impl DerivedCSharp {
                 simple_enum::build_enum_definition(csharp_name, &ns_expr, variants)
             }
             DerivedCSharpKind::TaggedEnum { tagging, variants } => {
-                tagged_enum::build_tagged_enum_definition(
-                    csharp_name,
-                    &ns_expr,
-                    tagging,
-                    variants,
-                )
+                tagged_enum::build_tagged_enum_definition(csharp_name, &ns_expr, tagging, variants)
             }
         }
     }
@@ -602,7 +597,7 @@ mod tests {
 
     #[test]
     fn tagged_internal_stj_csharp11_has_json_polymorphic() {
-        let ir =sample_tagged_enum_ir();
+        let ir = sample_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         assert!(
@@ -617,7 +612,7 @@ mod tests {
 
     #[test]
     fn tagged_internal_stj_csharp11_has_json_derived_type() {
-        let ir =sample_tagged_enum_ir();
+        let ir = sample_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         assert!(
@@ -636,7 +631,7 @@ mod tests {
 
     #[test]
     fn tagged_internal_stj_csharp11_has_abstract_record() {
-        let ir =sample_tagged_enum_ir();
+        let ir = sample_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         // The format template in the token stream uses `{type_kw}` placeholder.
@@ -652,7 +647,7 @@ mod tests {
 
     #[test]
     fn tagged_internal_stj_csharp11_has_sealed_records() {
-        let ir =sample_tagged_enum_ir();
+        let ir = sample_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         // Struct/newtype variants use named format params with type_kw.
@@ -660,10 +655,11 @@ mod tests {
             tokens.contains("sealed {type_kw} {name} : {parent}"),
             "should contain sealed type_kw pattern for data variants:\n{tokens}"
         );
-        // Unit variant uses positional format with literal variant name.
+        // Unit variant uses conditional format: record with semicolon or class with braces.
         assert!(
-            tokens.contains("public sealed {} {} : {};"),
-            "should contain sealed unit format template with type_kw:\n{tokens}"
+            tokens.contains("public sealed record {} : {};")
+                && tokens.contains("public sealed class {} : {} {{ }}"),
+            "should contain both record (semicolon) and class (braces) unit variant templates:\n{tokens}"
         );
         assert!(
             tokens.contains(r#""Quit""#),
@@ -673,7 +669,7 @@ mod tests {
 
     #[test]
     fn tagged_internal_stj_csharp11_has_required_modifier() {
-        let ir =sample_tagged_enum_ir();
+        let ir = sample_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         assert!(
@@ -684,7 +680,7 @@ mod tests {
 
     #[test]
     fn tagged_internal_stj_csharp11_has_file_scoped_namespace() {
-        let ir =sample_tagged_enum_ir();
+        let ir = sample_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         // The format template contains `namespace {ns};` for file-scoped.
@@ -696,7 +692,7 @@ mod tests {
 
     #[test]
     fn tagged_internal_stj_csharp11_uses_stj_using() {
-        let ir =sample_tagged_enum_ir();
+        let ir = sample_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         assert!(
@@ -707,7 +703,7 @@ mod tests {
 
     #[test]
     fn tagged_enum_has_runtime_namespace_branching() {
-        let ir =sample_tagged_enum_ir();
+        let ir = sample_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         // Runtime branching: both file-scoped and block-scoped templates exist.
@@ -727,7 +723,7 @@ mod tests {
 
     #[test]
     fn tagged_enum_has_runtime_required_branching() {
-        let ir =sample_tagged_enum_ir();
+        let ir = sample_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         // Runtime branching: `required_kw` variable determined by cfg.target().
@@ -743,7 +739,7 @@ mod tests {
 
     #[test]
     fn tagged_enum_has_both_converter_and_native_paths() {
-        let ir =sample_tagged_enum_ir();
+        let ir = sample_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         // Runtime branching: both converter and native polymorphism paths exist.
@@ -763,7 +759,7 @@ mod tests {
 
     #[test]
     fn tagged_struct_variant_has_properties() {
-        let ir =sample_tagged_enum_ir();
+        let ir = sample_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         assert!(
@@ -771,14 +767,14 @@ mod tests {
             "struct variant should have [JsonPropertyName] attributes:\n{tokens}"
         );
         assert!(
-            tokens.contains("get; init;"),
-            "struct variant should have {{ get; init; }} accessors:\n{tokens}"
+            tokens.contains("get; {acc};"),
+            "struct variant should have {{ get; {{acc}}; }} accessor placeholder:\n{tokens}"
         );
     }
 
     #[test]
     fn tagged_newtype_variant_has_value_property() {
-        let ir =sample_tagged_enum_ir();
+        let ir = sample_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         assert!(
@@ -789,13 +785,14 @@ mod tests {
 
     #[test]
     fn tagged_unit_variant_is_semicolon_record() {
-        let ir =sample_tagged_enum_ir();
+        let ir = sample_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
-        // Unit variant uses positional format with literal variant name.
+        // Unit variant uses conditional format: record with semicolon or class with braces.
         assert!(
-            tokens.contains("public sealed record {} : {};"),
-            "unit variant should use semicolon format template:\n{tokens}"
+            tokens.contains("public sealed record {} : {};")
+                && tokens.contains("public sealed class {} : {} {{ }}"),
+            "unit variant should contain both record (semicolon) and class (braces) templates:\n{tokens}"
         );
         assert!(
             tokens.contains(r#""Quit""#),
@@ -805,7 +802,7 @@ mod tests {
 
     #[test]
     fn tagged_enum_contains_both_serializer_attribute_paths() {
-        let ir =sample_tagged_enum_ir();
+        let ir = sample_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         // Runtime branching: both serializer attribute paths exist.
@@ -829,7 +826,7 @@ mod tests {
 
     #[test]
     fn tagged_enum_runtime_branches_both_namespace_styles() {
-        let ir =sample_tagged_enum_ir();
+        let ir = sample_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         // Runtime branching: both namespace styles exist in the token stream.
@@ -850,7 +847,7 @@ mod tests {
 
     #[test]
     fn tagged_enum_dependencies_includes_type_exprs() {
-        let ir =sample_tagged_enum_ir();
+        let ir = sample_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         // Should contain the CSharp::csharp_name() calls for struct/newtype fields
@@ -906,7 +903,7 @@ mod tests {
 
     #[test]
     fn tagged_enum_runtime_branches_converter_and_native_poly() {
-        let ir =sample_tagged_enum_ir();
+        let ir = sample_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         // Runtime branching: both converter and native polymorphism paths exist.
@@ -929,7 +926,7 @@ mod tests {
 
     #[test]
     fn stj_csharp9_converter_has_read_method() {
-        let ir =sample_tagged_enum_ir();
+        let ir = sample_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         assert!(
@@ -966,7 +963,7 @@ mod tests {
 
     #[test]
     fn stj_csharp9_converter_has_write_method() {
-        let ir =sample_tagged_enum_ir();
+        let ir = sample_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         assert!(
@@ -1027,7 +1024,7 @@ mod tests {
 
     #[test]
     fn stj_converter_struct_variant_read_has_properties() {
-        let ir =sample_tagged_enum_ir();
+        let ir = sample_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         // The Request variant has an Id field; the Read arm should deserialize it.
@@ -1056,7 +1053,7 @@ mod tests {
 
     #[test]
     fn stj_converter_newtype_variant_read_has_value() {
-        let ir =sample_tagged_enum_ir();
+        let ir = sample_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         // The Text variant is a newtype; the Read arm should have Value =.
@@ -1072,7 +1069,7 @@ mod tests {
 
     #[test]
     fn stj_converter_unit_variant_read_uses_empty_constructor() {
-        let ir =sample_tagged_enum_ir();
+        let ir = sample_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         // Unit variant uses `=> new {name}()` template with `name = "Quit"` arg.
@@ -1088,7 +1085,7 @@ mod tests {
 
     #[test]
     fn tagged_enum_has_both_converter_class_and_native_poly() {
-        let ir =sample_tagged_enum_ir();
+        let ir = sample_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         // Runtime branching: both converter class and native [JsonPolymorphic]
@@ -1154,7 +1151,7 @@ mod tests {
 
     #[test]
     fn external_stj_has_converter() {
-        let ir =sample_external_tagged_enum_ir();
+        let ir = sample_external_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         assert!(
@@ -1173,7 +1170,7 @@ mod tests {
 
     #[test]
     fn external_stj_read_handles_string_for_unit() {
-        let ir =sample_external_tagged_enum_ir();
+        let ir = sample_external_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         assert!(
@@ -1197,7 +1194,7 @@ mod tests {
 
     #[test]
     fn external_stj_read_handles_object_for_data() {
-        let ir =sample_external_tagged_enum_ir();
+        let ir = sample_external_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         assert!(
@@ -1212,7 +1209,7 @@ mod tests {
 
     #[test]
     fn external_stj_write_unit_uses_string_value() {
-        let ir =sample_external_tagged_enum_ir();
+        let ir = sample_external_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         assert!(
@@ -1223,7 +1220,7 @@ mod tests {
 
     #[test]
     fn external_stj_write_data_uses_property_name() {
-        let ir =sample_external_tagged_enum_ir();
+        let ir = sample_external_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         assert!(
@@ -1242,7 +1239,7 @@ mod tests {
 
     #[test]
     fn external_newtonsoft_has_converter() {
-        let ir =sample_external_tagged_enum_ir();
+        let ir = sample_external_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         assert!(
@@ -1261,7 +1258,7 @@ mod tests {
 
     #[test]
     fn external_newtonsoft_read_handles_tokens() {
-        let ir =sample_external_tagged_enum_ir();
+        let ir = sample_external_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         assert!(
@@ -1280,7 +1277,7 @@ mod tests {
 
     #[test]
     fn external_newtonsoft_write_unit_uses_write_value() {
-        let ir =sample_external_tagged_enum_ir();
+        let ir = sample_external_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         assert!(
@@ -1340,7 +1337,7 @@ mod tests {
 
     #[test]
     fn adjacent_stj_has_converter() {
-        let ir =sample_adjacent_tagged_enum_ir();
+        let ir = sample_adjacent_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         assert!(
@@ -1359,7 +1356,7 @@ mod tests {
 
     #[test]
     fn adjacent_stj_read_uses_tag_property() {
-        let ir =sample_adjacent_tagged_enum_ir();
+        let ir = sample_adjacent_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         assert!(
@@ -1379,7 +1376,7 @@ mod tests {
 
     #[test]
     fn adjacent_stj_read_struct_uses_content() {
-        let ir =sample_adjacent_tagged_enum_ir();
+        let ir = sample_adjacent_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         // Struct variant inlines the content element access to stay valid
@@ -1396,7 +1393,7 @@ mod tests {
 
     #[test]
     fn adjacent_stj_write_unit_no_content() {
-        let ir =sample_adjacent_tagged_enum_ir();
+        let ir = sample_adjacent_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         // Unit variant uses `case {name}:` format template with `name = "Quit"`.
@@ -1412,7 +1409,7 @@ mod tests {
 
     #[test]
     fn adjacent_stj_write_data_has_content() {
-        let ir =sample_adjacent_tagged_enum_ir();
+        let ir = sample_adjacent_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         // Data variants (newtype/struct) should write both tag and content.
@@ -1429,7 +1426,7 @@ mod tests {
 
     #[test]
     fn adjacent_newtonsoft_has_converter() {
-        let ir =sample_adjacent_tagged_enum_ir();
+        let ir = sample_adjacent_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         assert!(
@@ -1448,7 +1445,7 @@ mod tests {
 
     #[test]
     fn adjacent_newtonsoft_read_uses_jobj() {
-        let ir =sample_adjacent_tagged_enum_ir();
+        let ir = sample_adjacent_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         assert!(
@@ -1469,7 +1466,7 @@ mod tests {
 
     #[test]
     fn adjacent_newtonsoft_write_unit_only_tag() {
-        let ir =sample_adjacent_tagged_enum_ir();
+        let ir = sample_adjacent_tagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         // Unit variant uses `case {name}:` format template with `name = "Quit"`.
@@ -1530,7 +1527,7 @@ mod tests {
 
     #[test]
     fn untagged_stj_has_converter() {
-        let ir =sample_untagged_enum_ir();
+        let ir = sample_untagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         assert!(
@@ -1549,7 +1546,7 @@ mod tests {
 
     #[test]
     fn untagged_stj_read_tries_variants() {
-        let ir =sample_untagged_enum_ir();
+        let ir = sample_untagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         // Untagged Read should use try/catch to attempt each variant.
@@ -1569,7 +1566,7 @@ mod tests {
 
     #[test]
     fn untagged_stj_read_unit_checks_null() {
-        let ir =sample_untagged_enum_ir();
+        let ir = sample_untagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         // Unit variant should check for JsonValueKind.Null.
@@ -1590,7 +1587,7 @@ mod tests {
 
     #[test]
     fn untagged_stj_write_unit_writes_null() {
-        let ir =sample_untagged_enum_ir();
+        let ir = sample_untagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         // Unit variant Write should emit null.
@@ -1602,7 +1599,7 @@ mod tests {
 
     #[test]
     fn untagged_stj_write_newtype_direct() {
-        let ir =sample_untagged_enum_ir();
+        let ir = sample_untagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         // Newtype variant Write should serialize the value directly (no wrapping
@@ -1620,7 +1617,7 @@ mod tests {
 
     #[test]
     fn untagged_newtonsoft_has_converter() {
-        let ir =sample_untagged_enum_ir();
+        let ir = sample_untagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         assert!(
@@ -1639,7 +1636,7 @@ mod tests {
 
     #[test]
     fn untagged_newtonsoft_read_uses_jtoken() {
-        let ir =sample_untagged_enum_ir();
+        let ir = sample_untagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         // Untagged Newtonsoft Read should use JToken.ReadFrom for buffering.
@@ -1655,7 +1652,7 @@ mod tests {
 
     #[test]
     fn untagged_newtonsoft_write_unit_writes_null() {
-        let ir =sample_untagged_enum_ir();
+        let ir = sample_untagged_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         // Unit variant Write should emit null via WriteNull().
@@ -1669,7 +1666,7 @@ mod tests {
 
     #[test]
     fn record_csharp10_file_scoped_namespace() {
-        let ir =sample_ir(false, None);
+        let ir = sample_ir(false, None);
         let tokens = ir.into_token_stream().to_string();
 
         // C# 10+ should use file-scoped namespace with semicolon.
@@ -1686,7 +1683,7 @@ mod tests {
 
     #[test]
     fn record_csharp9_block_scoped_namespace() {
-        let ir =sample_ir(false, None);
+        let ir = sample_ir(false, None);
         let tokens = ir.into_token_stream().to_string();
 
         // Runtime branching: both file-scoped and block-scoped templates
@@ -1708,7 +1705,7 @@ mod tests {
 
     #[test]
     fn record_csharp11_required_properties() {
-        let ir =sample_ir(false, None);
+        let ir = sample_ir(false, None);
         let tokens = ir.into_token_stream().to_string();
 
         // C# 11+ non-optional properties should have `required` modifier.
@@ -1720,7 +1717,7 @@ mod tests {
 
     #[test]
     fn record_csharp11_optional_field_no_required() {
-        let ir =DerivedCSharp {
+        let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("WithOpt"),
             csharp_name: String::from("WithOpt"),
             namespace_override: Some(String::from("Ns")),
@@ -1749,7 +1746,7 @@ mod tests {
 
     #[test]
     fn record_csharp9_no_required() {
-        let ir =sample_ir(false, None);
+        let ir = sample_ir(false, None);
         let tokens = ir.into_token_stream().to_string();
 
         // The generated code now contains runtime branching for the `required`
@@ -1768,7 +1765,7 @@ mod tests {
 
     #[test]
     fn enum_csharp10_file_scoped_namespace() {
-        let ir =sample_enum_ir();
+        let ir = sample_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         // Namespace is now a runtime variable bound as `let ns: &str = "Test.Ns";`
@@ -1785,7 +1782,7 @@ mod tests {
 
     #[test]
     fn enum_csharp9_block_scoped_namespace() {
-        let ir =sample_enum_ir();
+        let ir = sample_enum_ir();
         let tokens = ir.into_token_stream().to_string();
 
         // Runtime branching: both file-scoped and block-scoped templates
@@ -1810,7 +1807,7 @@ mod tests {
 
     #[test]
     fn record_with_optional_ref_type_has_nullable_enable() {
-        let ir =DerivedCSharp {
+        let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("WithOptStr"),
             csharp_name: String::from("WithOptStr"),
             namespace_override: Some(String::from("Ns")),
@@ -1837,7 +1834,7 @@ mod tests {
 
     #[test]
     fn record_with_no_optional_fields_no_nullable_check() {
-        let ir =sample_ir(false, None); // has one non-optional String field
+        let ir = sample_ir(false, None); // has one non-optional String field
         let tokens = ir.into_token_stream().to_string();
 
         // No optional fields means the nullable_checks vec should be empty.
@@ -1852,7 +1849,7 @@ mod tests {
 
     #[test]
     fn tagged_enum_with_optional_ref_field_has_nullable_check() {
-        let ir =DerivedCSharp {
+        let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("Event"),
             csharp_name: String::from("Event"),
             namespace_override: Some(String::from("Ns")),
@@ -1886,7 +1883,7 @@ mod tests {
 
     #[test]
     fn record_generates_csharp_fields_method() {
-        let ir =sample_ir(false, None);
+        let ir = sample_ir(false, None);
         let tokens = ir.into_token_stream().to_string();
 
         assert!(
@@ -1897,7 +1894,7 @@ mod tests {
 
     #[test]
     fn record_with_flatten_struct_field_has_csharp_fields_call() {
-        let ir =DerivedCSharp {
+        let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("Outer"),
             csharp_name: String::from("Outer"),
             namespace_override: Some(String::from("Ns")),
@@ -1931,7 +1928,7 @@ mod tests {
 
     #[test]
     fn record_with_flatten_hashmap_has_extension_data() {
-        let ir =DerivedCSharp {
+        let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("WithExtra"),
             csharp_name: String::from("WithExtra"),
             namespace_override: Some(String::from("Ns")),
@@ -1959,7 +1956,7 @@ mod tests {
 
     #[test]
     fn flatten_struct_dependencies_uses_transitive() {
-        let ir =DerivedCSharp {
+        let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("Outer"),
             csharp_name: String::from("Outer"),
             namespace_override: Some(String::from("Ns")),
@@ -2000,7 +1997,7 @@ mod tests {
 
     #[test]
     fn tagged_enum_struct_variant_with_flatten_struct_has_field_info() {
-        let ir =DerivedCSharp {
+        let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("Event"),
             csharp_name: String::from("Event"),
             namespace_override: Some(String::from("Ns")),
@@ -2051,7 +2048,7 @@ mod tests {
 
     #[test]
     fn tagged_enum_struct_variant_with_flatten_hashmap_has_extension_data() {
-        let ir =DerivedCSharp {
+        let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("Event"),
             csharp_name: String::from("Event"),
             namespace_override: Some(String::from("Ns")),
@@ -2097,7 +2094,7 @@ mod tests {
 
     #[test]
     fn tagged_enum_with_hashmap_flatten_has_nullable_directive() {
-        let ir =DerivedCSharp {
+        let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("Event"),
             csharp_name: String::from("Event"),
             namespace_override: Some(String::from("Ns")),
@@ -2204,7 +2201,7 @@ mod tests {
 
     #[test]
     fn flatten_hashmap_dependencies_excluded() {
-        let ir =DerivedCSharp {
+        let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("WithExtra"),
             csharp_name: String::from("WithExtra"),
             namespace_override: Some(String::from("Ns")),

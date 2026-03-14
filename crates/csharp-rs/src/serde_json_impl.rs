@@ -7,7 +7,7 @@
 //! - **System.Text.Json**: `JsonElement`
 //! - **Newtonsoft.Json**: `JToken`
 
-use crate::{Config, CSharp, Serializer};
+use crate::{CSharp, Config, Serializer};
 
 impl_csharp_primitive!(serde_json::Number, "double");
 

@@ -1,4 +1,4 @@
-// Rust guideline compliant 2026-02-14
+// Rust guideline compliant 2026-03-14
 //! Named struct processing for C# code generation.
 //!
 //! Converts a Rust struct with named fields into the [`DerivedCSharp`]
@@ -87,9 +87,9 @@ pub fn named_struct(
         // C# property name: always PascalCase
         let csharp_property_name = to_pascal_case(&field_name);
 
-        // Type analysis — skip_serializing_if forces nullable
+        // Type analysis -- skip_serializing_if and default both force nullable
         let (is_optional, type_expr) = analyze_type(&field.ty);
-        let is_optional = is_optional || field_attr.skip_serializing_if;
+        let is_optional = is_optional || field_attr.skip_serializing_if || field_attr.default;
 
         fields.push(CSharpField {
             csharp_property_name,
@@ -366,6 +366,22 @@ mod tests {
         assert_eq!(fields.len(), 2);
         assert!(!fields[0].is_optional, "name should not be optional");
         assert!(fields[1].is_optional, "tag should be forced optional");
+    }
+
+    #[test]
+    fn field_serde_default_forces_nullable() {
+        let input: DeriveInput = parse_quote! {
+            struct Foo {
+                name: String,
+                #[serde(default)]
+                level: i32,
+            }
+        };
+        let ir = process_named(&input);
+        let fields = extract_fields(&ir);
+        assert_eq!(fields.len(), 2);
+        assert!(!fields[0].is_optional, "name should not be optional");
+        assert!(fields[1].is_optional, "level with default should be optional");
     }
 
     #[test]

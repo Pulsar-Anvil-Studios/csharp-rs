@@ -1,4 +1,4 @@
-// Rust guideline compliant 2026-02-10
+// Rust guideline compliant 2026-03-14
 //! Integration tests for `#[derive(CSharp)]` on structs with named fields.
 
 #![expect(dead_code, reason = "test structs are only used via derive macro")]
@@ -389,6 +389,29 @@ fn skip_serializing_if_forces_nullable() {
     assert!(
         def.contains("public string? Tag { get; init; }"),
         "tag should be forced nullable by skip_serializing_if:\n{def}"
+    );
+}
+
+// --- serde(default) ---
+
+#[derive(CSharp)]
+struct WithDefault {
+    name: String,
+    #[serde(default)]
+    level: i32,
+}
+
+#[test]
+fn serde_default_makes_field_nullable() {
+    let cfg = Config::default();
+    let def = WithDefault::csharp_definition(&cfg);
+    assert!(
+        def.contains("int? Level"),
+        "field with serde(default) should be nullable:\n{def}"
+    );
+    assert!(
+        !def.contains("int? Name") && def.contains("string Name"),
+        "field without default should not be affected:\n{def}"
     );
 }
 

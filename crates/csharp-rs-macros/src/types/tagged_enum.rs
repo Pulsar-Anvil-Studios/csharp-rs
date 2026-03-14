@@ -1,4 +1,4 @@
-// Rust guideline compliant 2026-02-14
+// Rust guideline compliant 2026-03-14
 //! Tagged enum processing for C# code generation.
 //!
 //! Converts a Rust enum with data variants into the [`DerivedCSharp`]
@@ -102,9 +102,9 @@ fn process_struct_fields(
         // C# property name: always PascalCase.
         let csharp_property_name = to_pascal_case(&field_name);
 
-        // Type analysis -- skip_serializing_if forces nullable.
+        // Type analysis -- skip_serializing_if and default both force nullable.
         let (is_optional, type_expr) = analyze_type(&field.ty);
-        let is_optional = is_optional || field_attr.skip_serializing_if;
+        let is_optional = is_optional || field_attr.skip_serializing_if || field_attr.default;
 
         result.push(CSharpField {
             csharp_property_name,

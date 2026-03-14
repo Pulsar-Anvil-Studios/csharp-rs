@@ -1,9 +1,9 @@
 // Rust guideline compliant 2026-03-14
-//! Field-level attribute parsing for `#[serde(...)]`.
+//! Field-level attribute parsing for `#[serde(...)]` and `#[csharp(...)]`.
 //!
 //! Supports `#[serde(rename = "...")]`, `#[serde(skip)]`,
 //! `#[serde(skip_serializing)]`, `#[serde(skip_serializing_if = "...")]`,
-//! and `#[serde(default)]`.
+//! `#[serde(default)]`, and `#[csharp(type = "...")]`.
 
 use syn::{Attribute, Lit};
 
@@ -22,6 +22,8 @@ pub struct FieldAttr {
     pub flatten: bool,
     /// Field has a default value (`serde(default)` or `serde(default = "fn_name")`).
     pub default: bool,
+    /// Explicit C# type override from `#[csharp(type = "...")]`.
+    pub type_override: Option<String>,
 }
 
 impl FieldAttr {
@@ -36,6 +38,8 @@ impl FieldAttr {
         for attr in attrs {
             if attr.path().is_ident("serde") {
                 result.parse_serde(attr)?;
+            } else if attr.path().is_ident("csharp") {
+                result.parse_csharp(attr)?;
             }
         }
 
@@ -72,6 +76,29 @@ impl FieldAttr {
                 }
                 // Silently ignore other serde attributes (handled by serde itself).
                 _ => {}
+            }
+            Ok(())
+        })
+    }
+
+    /// Parses `#[csharp(...)]` field attributes.
+    ///
+    /// Supported attributes:
+    /// - `type = "CSharpType"` — overrides the generated C# type name.
+    fn parse_csharp(&mut self, attr: &Attribute) -> syn::Result<()> {
+        attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("type") {
+                let value = meta.value()?;
+                let lit: Lit = value.parse()?;
+                if let Lit::Str(lit_str) = lit {
+                    self.type_override = Some(lit_str.value());
+                }
+            } else {
+                let ident = meta.path.get_ident().map_or_else(
+                    || String::from("<unknown>"),
+                    ToString::to_string,
+                );
+                return Err(meta.error(format!("unknown csharp field attribute `{ident}`")));
             }
             Ok(())
         })
@@ -180,5 +207,30 @@ mod tests {
         let field_attr = FieldAttr::from_attrs(&attrs).unwrap();
         assert!(field_attr.default);
         assert!(field_attr.skip_serializing_if);
+    }
+
+    #[test]
+    fn parse_csharp_type_override() {
+        let attrs: Vec<Attribute> = vec![parse_quote!(#[csharp(type = "CustomType")])];
+        let field_attr = FieldAttr::from_attrs(&attrs).unwrap();
+        assert_eq!(field_attr.type_override.as_deref(), Some("CustomType"));
+    }
+
+    #[test]
+    fn csharp_type_and_serde_rename_combined() {
+        let attrs: Vec<Attribute> = vec![
+            parse_quote!(#[serde(rename = "data")]),
+            parse_quote!(#[csharp(type = "JsonElement")]),
+        ];
+        let field_attr = FieldAttr::from_attrs(&attrs).unwrap();
+        assert_eq!(field_attr.rename.as_deref(), Some("data"));
+        assert_eq!(field_attr.type_override.as_deref(), Some("JsonElement"));
+    }
+
+    #[test]
+    fn unknown_csharp_field_attr_errors() {
+        let attrs: Vec<Attribute> = vec![parse_quote!(#[csharp(bogus)])];
+        let result = FieldAttr::from_attrs(&attrs);
+        assert!(result.is_err(), "unknown csharp attr should error");
     }
 }

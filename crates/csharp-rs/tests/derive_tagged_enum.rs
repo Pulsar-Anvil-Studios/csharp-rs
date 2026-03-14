@@ -573,3 +573,46 @@ fn tagged_enum_csharp11_has_required_modifier() {
         "C# 11 tagged enum struct variant should have required modifier:\n{def}"
     );
 }
+
+// --- rename_all_fields applies to variant struct fields independently ---
+
+#[derive(CSharp)]
+#[serde(tag = "type", rename_all = "UPPERCASE", rename_all_fields = "camelCase")]
+enum ApiEvent {
+    UserLogin {
+        user_name: String,
+        login_time: String,
+    },
+}
+
+#[test]
+fn rename_all_fields_applies_to_variant_fields_independently() {
+    let cfg = Config::default();
+    let def = ApiEvent::csharp_definition(&cfg);
+    // Variant discriminator should use rename_all (UPPERCASE): "USERLOGIN"
+    // UPPERCASE joins words without separator per serde convention.
+    assert!(
+        def.contains("\"USERLOGIN\""),
+        "variant discriminator should use rename_all UPPERCASE:\n{def}"
+    );
+    // Field names should use rename_all_fields (camelCase): "userName", "loginTime"
+    assert!(
+        def.contains("\"userName\""),
+        "field should use rename_all_fields camelCase:\n{def}"
+    );
+    assert!(
+        def.contains("\"loginTime\""),
+        "field should use rename_all_fields camelCase:\n{def}"
+    );
+}
+
+#[test]
+fn rename_all_fields_does_not_affect_variant_names() {
+    let cfg = Config::default();
+    let def = ApiEvent::csharp_definition(&cfg);
+    // C# type name stays PascalCase regardless.
+    assert!(
+        def.contains("sealed record UserLogin : ApiEvent"),
+        "C# variant name should remain PascalCase:\n{def}"
+    );
+}

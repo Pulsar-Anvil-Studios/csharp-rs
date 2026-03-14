@@ -89,13 +89,14 @@ fn process_struct_fields(
             .expect("named fields always have identifiers");
         let field_name = field_ident.to_string();
 
-        // JSON name: field rename overrides container rename_all.
+        // JSON name: field rename > rename_all_fields > rename_all > original
         let json_name = if let Some(ref renamed) = field_attr.rename {
             renamed.clone()
         } else {
-            container.rename_all.map_or_else(
+            let inflection = container.rename_all_fields.or(container.rename_all);
+            inflection.map_or_else(
                 || field_name.clone(),
-                |inflection| inflection.apply(&field_name),
+                |inf| inf.apply(&field_name),
             )
         };
 
@@ -472,6 +473,64 @@ mod tests {
                 _ => panic!("expected Struct variant data"),
             },
             _ => panic!("expected TaggedEnum kind"),
+        }
+    }
+
+    #[test]
+    fn rename_all_fields_overrides_rename_all_for_struct_variant_fields() {
+        let input: DeriveInput = parse_quote! {
+            #[serde(tag = "type", rename_all = "UPPERCASE", rename_all_fields = "camelCase")]
+            enum Event {
+                UserLogin { user_name: String, login_time: String },
+                SessionEnd,
+            }
+        };
+        let ir = process(&input);
+        let (_, variants) = extract_variants(&ir);
+
+        // Variant discriminators should use rename_all (UPPERCASE).
+        assert_eq!(variants[0].json_name, "USERLOGIN");
+        assert_eq!(variants[1].json_name, "SESSIONEND");
+
+        // Struct variant fields should use rename_all_fields (camelCase).
+        match &variants[0].data {
+            TaggedVariantData::Struct(fields) => {
+                assert_eq!(
+                    fields[0].json_name, "userName",
+                    "rename_all_fields should apply to struct variant fields"
+                );
+                assert_eq!(fields[1].json_name, "loginTime");
+            }
+            _ => panic!("expected Struct data"),
+        }
+    }
+
+    #[test]
+    fn field_rename_overrides_rename_all_fields_in_variant() {
+        let input: DeriveInput = parse_quote! {
+            #[serde(tag = "type", rename_all_fields = "camelCase")]
+            enum Event {
+                Click {
+                    #[serde(rename = "posX")]
+                    x_pos: i32,
+                    y_pos: i32,
+                },
+            }
+        };
+        let ir = process(&input);
+        let (_, variants) = extract_variants(&ir);
+        match &variants[0].data {
+            TaggedVariantData::Struct(fields) => {
+                assert_eq!(
+                    fields[0].json_name, "posX",
+                    "per-field rename should override rename_all_fields"
+                );
+                assert_eq!(
+                    fields[1].json_name, "yPos",
+                    "rename_all_fields should apply when no per-field rename"
+                );
+            }
+            _ => panic!("expected Struct data"),
         }
     }
 }

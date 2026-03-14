@@ -1,4 +1,4 @@
-// Rust guideline compliant 2026-02-10
+// Rust guideline compliant 2026-03-14
 //! Container-level attribute parsing for `#[serde(...)]` and `#[csharp(...)]`.
 //!
 //! Extracts `rename_all` from serde attributes and `namespace`, `export`,
@@ -11,8 +11,10 @@ use syn::{Attribute, Lit};
 /// Parsed container-level attributes.
 #[derive(Debug, Default)]
 pub struct ContainerAttr {
-    /// The serde `rename_all` inflection, if specified.
+    /// The serde `rename_all` inflection for variant names, if specified.
     pub rename_all: Option<Inflection>,
+    /// The serde `rename_all_fields` inflection for fields within enum variants, if specified.
+    pub rename_all_fields: Option<Inflection>,
     /// The serde internally-tagged discriminant field name from `#[serde(tag = "...")]`.
     pub tag: Option<String>,
     /// The serde adjacently-tagged content field name from `#[serde(content = "...")]`.
@@ -54,6 +56,12 @@ impl ContainerAttr {
                 let lit: Lit = value.parse()?;
                 if let Lit::Str(lit_str) = lit {
                     self.rename_all = Inflection::from_rename_all(&lit_str.value());
+                }
+            } else if meta.path.is_ident("rename_all_fields") {
+                let value = meta.value()?;
+                let lit: Lit = value.parse()?;
+                if let Lit::Str(lit_str) = lit {
+                    self.rename_all_fields = Inflection::from_rename_all(&lit_str.value());
                 }
             } else if meta.path.is_ident("tag") {
                 let value = meta.value()?;
@@ -226,5 +234,21 @@ mod tests {
         assert!(container.tag.is_none());
         assert!(container.content.is_none());
         assert!(!container.untagged);
+    }
+
+    #[test]
+    fn parse_serde_rename_all_fields() {
+        let attrs: Vec<Attribute> = vec![parse_quote!(#[serde(rename_all_fields = "camelCase")])];
+        let container = ContainerAttr::from_attrs(&attrs).unwrap();
+        assert_eq!(container.rename_all_fields, Some(Inflection::Camel));
+    }
+
+    #[test]
+    fn rename_all_and_rename_all_fields_independent() {
+        let attrs: Vec<Attribute> =
+            vec![parse_quote!(#[serde(rename_all = "UPPERCASE", rename_all_fields = "camelCase")])];
+        let container = ContainerAttr::from_attrs(&attrs).unwrap();
+        assert_eq!(container.rename_all, Some(Inflection::Upper));
+        assert_eq!(container.rename_all_fields, Some(Inflection::Camel));
     }
 }

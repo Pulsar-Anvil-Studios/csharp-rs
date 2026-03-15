@@ -1,6 +1,6 @@
 [package]
 name = "csharp-rs-macros"
-version = "0.1.0"
+version = "0.1.1"
 description = "Proc macro implementation for csharp-rs"
 authors.workspace = true
 edition.workspace = true

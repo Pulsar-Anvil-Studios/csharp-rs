@@ -1,4 +1,4 @@
-## [0.1.0] - 2026-03-15
+## [0.1.1] - 2026-03-15
 
 ### 🚀 Features
 
@@ -60,3 +60,5 @@
 - *(cargo)* Prepare Cargo.toml metadata for crates.io publishing
 - *(github)* Add tag-triggered release workflow for crates.io publishing
 - *(fmt)* Apply rustfmt formatting to generics and test files
+- *(release)* V0.1.0 [skip ci]
+- *(release)* Trigger v0.1.1 release

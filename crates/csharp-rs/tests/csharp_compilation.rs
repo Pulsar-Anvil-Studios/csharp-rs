@@ -196,7 +196,10 @@ enum GenericTaggedEnum<T> {
 /// Exports all test types as `.cs` files, writes a `.csproj`, and runs `dotnet build`.
 ///
 /// Panics if `dotnet` is not found or the build fails.
-#[expect(clippy::too_many_lines, reason = "single orchestration function for all type exports")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "single orchestration function for all type exports"
+)]
 fn compile_all_types(
     version: CSharpVersion,
     serializer: Serializer,

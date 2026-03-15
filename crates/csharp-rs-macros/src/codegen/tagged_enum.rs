@@ -486,7 +486,8 @@ fn build_class_attributes_expr(
         }
 
         let converter_attr_non_generic = format!("[JsonConverter(typeof({csharp_name}Converter))]");
-        let converter_factory_attr = format!("[JsonConverter(typeof({csharp_name}ConverterFactory))]");
+        let converter_factory_attr =
+            format!("[JsonConverter(typeof({csharp_name}ConverterFactory))]");
 
         quote! {
             if use_native_polymorphism {
@@ -507,7 +508,8 @@ fn build_class_attributes_expr(
     } else {
         // Non-internal tagging always uses converter.
         let converter_attr_non_generic = format!("[JsonConverter(typeof({csharp_name}Converter))]");
-        let converter_factory_attr = format!("[JsonConverter(typeof({csharp_name}ConverterFactory))]");
+        let converter_factory_attr =
+            format!("[JsonConverter(typeof({csharp_name}ConverterFactory))]");
         quote! {
             if !generic_suffix.is_empty() {
                 match cfg.serializer() {

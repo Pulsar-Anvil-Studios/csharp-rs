@@ -194,10 +194,7 @@ impl DerivedCSharp {
     /// `CSharp` impl returning the literal name `"T"`. Inside
     /// `csharp_definition()`, these shadow the real generic params so
     /// that `<T as CSharp>::csharp_name(cfg)` returns `"T"`.
-    fn build_dummy_defs(
-        &self,
-        type_param_idents: &[&proc_macro2::Ident],
-    ) -> Vec<TokenStream> {
+    fn build_dummy_defs(&self, type_param_idents: &[&proc_macro2::Ident]) -> Vec<TokenStream> {
         type_param_idents
             .iter()
             .filter(|id| !self.concrete.contains_key(id))
@@ -226,10 +223,7 @@ impl DerivedCSharp {
     ///
     /// For non-concrete type params, produces `format!("<{}>", ...)`.
     /// When all params are concrete, produces an empty string.
-    fn build_generic_suffix_expr(
-        &self,
-        type_param_idents: &[&proc_macro2::Ident],
-    ) -> TokenStream {
+    fn build_generic_suffix_expr(&self, type_param_idents: &[&proc_macro2::Ident]) -> TokenStream {
         let param_name_strs: Vec<String> = type_param_idents
             .iter()
             .filter_map(|id| {

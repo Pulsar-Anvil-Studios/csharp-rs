@@ -329,8 +329,7 @@ mod tests {
 
     #[test]
     fn parse_csharp_concrete_multiple() {
-        let attrs: Vec<Attribute> =
-            vec![parse_quote!(#[csharp(concrete(T = String, U = i32))])];
+        let attrs: Vec<Attribute> = vec![parse_quote!(#[csharp(concrete(T = String, U = i32))])];
         let container = ContainerAttr::from_attrs(&attrs).unwrap();
         assert_eq!(container.concrete.len(), 2);
         assert!(container.concrete.contains_key(&parse_quote!(T)));
@@ -339,8 +338,7 @@ mod tests {
 
     #[test]
     fn parse_csharp_bound() {
-        let attrs: Vec<Attribute> =
-            vec![parse_quote!(#[csharp(bound = "T: std::fmt::Display")])];
+        let attrs: Vec<Attribute> = vec![parse_quote!(#[csharp(bound = "T: std::fmt::Display")])];
         let container = ContainerAttr::from_attrs(&attrs).unwrap();
         assert!(container.bound.is_some());
         assert_eq!(container.bound.unwrap().len(), 1);
@@ -348,8 +346,7 @@ mod tests {
 
     #[test]
     fn parse_csharp_concrete_with_export() {
-        let attrs: Vec<Attribute> =
-            vec![parse_quote!(#[csharp(concrete(T = String), export)])];
+        let attrs: Vec<Attribute> = vec![parse_quote!(#[csharp(concrete(T = String), export)])];
         let container = ContainerAttr::from_attrs(&attrs).unwrap();
         assert_eq!(container.concrete.len(), 1);
         assert!(container.export);

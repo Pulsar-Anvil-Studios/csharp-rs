@@ -211,21 +211,21 @@ fn generate_xunit_fact(name: &str, csharp_type: &str, serializer: Serializer) ->
 }
 
 /// Generates the full xUnit test class source.
-fn generate_test_class(
-    test_cases: &[TestCase],
-    base_dir: &str,
-    serializer: Serializer,
-) -> String {
+fn generate_test_class(test_cases: &[TestCase], base_dir: &str, serializer: Serializer) -> String {
     let using_block = match serializer {
-        Serializer::SystemTextJson => "\
+        Serializer::SystemTextJson => {
+            "\
 using System.Text.Json;
 using Generated;
-using Xunit;",
-        Serializer::Newtonsoft => "\
+using Xunit;"
+        }
+        Serializer::Newtonsoft => {
+            "\
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Generated;
-using Xunit;",
+using Xunit;"
+        }
     };
 
     let facts: Vec<String> = test_cases
@@ -416,13 +416,23 @@ fn run_roundtrip(
 #[test]
 #[ignore = "requires dotnet SDK"]
 fn roundtrip_unity_stj() {
-    run_roundtrip(CSharpVersion::Unity, Serializer::SystemTextJson, "9.0", "net8.0");
+    run_roundtrip(
+        CSharpVersion::Unity,
+        Serializer::SystemTextJson,
+        "9.0",
+        "net8.0",
+    );
 }
 
 #[test]
 #[ignore = "requires dotnet SDK"]
 fn roundtrip_unity_newtonsoft() {
-    run_roundtrip(CSharpVersion::Unity, Serializer::Newtonsoft, "9.0", "net8.0");
+    run_roundtrip(
+        CSharpVersion::Unity,
+        Serializer::Newtonsoft,
+        "9.0",
+        "net8.0",
+    );
 }
 
 #[test]

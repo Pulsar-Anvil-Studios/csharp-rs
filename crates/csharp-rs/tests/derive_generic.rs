@@ -47,10 +47,7 @@ fn generic_struct_definition_has_type_param() {
 fn generic_struct_definition_has_generic_field() {
     let cfg = Config::default().with_target(CSharpVersion::CSharp10);
     let def = Container::<String>::csharp_definition(&cfg);
-    assert!(
-        def.contains("T Item"),
-        "field type should be T:\n{def}"
-    );
+    assert!(def.contains("T Item"), "field type should be T:\n{def}");
 }
 
 #[test]
@@ -67,10 +64,7 @@ fn generic_struct_definition_has_concrete_field() {
 fn generic_struct_two_params_definition() {
     let cfg = Config::default().with_target(CSharpVersion::CSharp10);
     let def = Pair::<String, i32>::csharp_definition(&cfg);
-    assert!(
-        def.contains("Pair<A, B>"),
-        "should have Pair<A, B>:\n{def}"
-    );
+    assert!(def.contains("Pair<A, B>"), "should have Pair<A, B>:\n{def}");
     assert!(def.contains("A First"), "first field should be A:\n{def}");
     assert!(def.contains("B Second"), "second field should be B:\n{def}");
 }

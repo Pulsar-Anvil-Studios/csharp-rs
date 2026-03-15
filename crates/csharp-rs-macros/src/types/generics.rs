@@ -268,8 +268,7 @@ mod tests {
         let field_types: Vec<&Type> = vec![&ty];
         let custom: Vec<WherePredicate> = vec![parse_quote!(T: std::fmt::Display)];
 
-        let preds =
-            build_where_predicates(&generics, &field_types, &HashMap::new(), Some(&custom));
+        let preds = build_where_predicates(&generics, &field_types, &HashMap::new(), Some(&custom));
         assert_eq!(preds.len(), 1);
         let pred_str = preds.first().map(|p| quote::quote!(#p).to_string());
         assert!(
@@ -287,8 +286,7 @@ mod tests {
         let ty: Type = parse_quote!(T);
         let field_types: Vec<&Type> = vec![&ty];
 
-        let preds =
-            build_where_predicates(&item.generics, &field_types, &HashMap::new(), None);
+        let preds = build_where_predicates(&item.generics, &field_types, &HashMap::new(), None);
 
         // Should have both: the existing `T: Clone` and auto-generated `T: CSharp`.
         assert_eq!(preds.len(), 2, "existing + auto-generated");

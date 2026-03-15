@@ -8,9 +8,11 @@ mod record;
 mod simple_enum;
 mod tagged_enum;
 
+use crate::types::generics::{build_where_predicates, has_type_params};
 use crate::types::{CSharpField, DerivedCSharp, DerivedCSharpKind, FlattenKind};
 use proc_macro2::TokenStream;
 use quote::quote;
+use syn::Type;
 
 /// C# built-in value type keywords.
 ///
@@ -59,14 +61,90 @@ impl DerivedCSharp {
         let csharp_fields_body = self.build_csharp_fields();
         let export_test = self.build_export_test();
 
+        if has_type_params(&self.generics) {
+            self.build_generic_impl(
+                ident,
+                csharp_name,
+                &definition_body,
+                &dependencies_body,
+                &csharp_fields_body,
+                &export_test,
+            )
+        } else {
+            quote! {
+                impl csharp_rs::CSharp for #ident {
+                    fn csharp_name(cfg: &csharp_rs::Config) -> String {
+                        let _ = cfg;
+                        String::from(#csharp_name)
+                    }
+
+                    fn csharp_definition(cfg: &csharp_rs::Config) -> String {
+                        let generic_suffix = String::new();
+                        #definition_body
+                    }
+
+                    fn dependencies(cfg: &csharp_rs::Config) -> Vec<String> {
+                        #dependencies_body
+                    }
+
+                    fn csharp_fields(cfg: &csharp_rs::Config) -> Vec<csharp_rs::CSharpFieldInfo> {
+                        #csharp_fields_body
+                    }
+                }
+
+                #export_test
+            }
+        }
+    }
+
+    /// Builds the `impl CSharp` block for a generic type.
+    ///
+    /// Generates:
+    /// - `impl<T: CSharp, ...>` header with where-clause bounds
+    /// - `csharp_name()` that formats with resolved type param names
+    /// - `csharp_definition()` with dummy structs shadowing type params
+    /// - `generic_suffix` variable for the C# type declaration
+    fn build_generic_impl(
+        &self,
+        ident: &proc_macro2::Ident,
+        csharp_name: &str,
+        definition_body: &TokenStream,
+        dependencies_body: &TokenStream,
+        csharp_fields_body: &TokenStream,
+        export_test: &TokenStream,
+    ) -> TokenStream {
+        let field_types = self.collect_field_types();
+        let field_type_refs: Vec<&Type> = field_types.iter().collect();
+        let where_predicates = build_where_predicates(
+            &self.generics,
+            &field_type_refs,
+            &self.concrete,
+            self.custom_bounds.as_ref(),
+        );
+
+        let type_params: Vec<_> = self.generics.type_params().cloned().collect();
+        let lifetime_params: Vec<_> = self.generics.lifetimes().cloned().collect();
+        let type_param_idents: Vec<_> = type_params.iter().map(|p| &p.ident).collect();
+
+        let csharp_name_body = self.build_generic_name_body(csharp_name, &type_param_idents);
+        let dummy_defs = self.build_dummy_defs(&type_param_idents);
+        let generic_suffix_expr = self.build_generic_suffix_expr(&type_param_idents);
+
+        let where_clause = if where_predicates.is_empty() {
+            quote! {}
+        } else {
+            quote! { where #where_predicates }
+        };
+
         quote! {
-            impl csharp_rs::CSharp for #ident {
+            impl<#(#lifetime_params,)* #(#type_params),*> csharp_rs::CSharp for #ident<#(#type_param_idents),*> #where_clause {
                 fn csharp_name(cfg: &csharp_rs::Config) -> String {
-                    let _ = cfg;
-                    String::from(#csharp_name)
+                    #csharp_name_body
                 }
 
                 fn csharp_definition(cfg: &csharp_rs::Config) -> String {
+                    #(#dummy_defs)*
+                    #generic_suffix_expr
                     #definition_body
                 }
 
@@ -81,6 +159,120 @@ impl DerivedCSharp {
 
             #export_test
         }
+    }
+
+    /// Builds the `csharp_name()` body for generic types.
+    ///
+    /// Produces `format!("{}<{}>", "Foo", params)` where `params` joins
+    /// the resolved C# names of each type parameter.
+    fn build_generic_name_body(
+        &self,
+        csharp_name: &str,
+        type_param_idents: &[&proc_macro2::Ident],
+    ) -> TokenStream {
+        // Only include non-concrete params in the C# name.
+        let param_name_exprs: Vec<TokenStream> = type_param_idents
+            .iter()
+            .filter(|id| !self.concrete.contains_key(id))
+            .map(|id| quote! { <#id as csharp_rs::CSharp>::csharp_name(cfg) })
+            .collect();
+
+        if param_name_exprs.is_empty() {
+            // All params are concrete — the C# type is non-generic.
+            quote! { String::from(#csharp_name) }
+        } else {
+            quote! {
+                let params = [#(#param_name_exprs),*].join(", ");
+                format!("{}<{}>", #csharp_name, params)
+            }
+        }
+    }
+
+    /// Builds dummy struct definitions that shadow outer type params.
+    ///
+    /// Each non-concrete type param gets a `struct T;` with a trivial
+    /// `CSharp` impl returning the literal name `"T"`. Inside
+    /// `csharp_definition()`, these shadow the real generic params so
+    /// that `<T as CSharp>::csharp_name(cfg)` returns `"T"`.
+    fn build_dummy_defs(
+        &self,
+        type_param_idents: &[&proc_macro2::Ident],
+    ) -> Vec<TokenStream> {
+        type_param_idents
+            .iter()
+            .filter(|id| !self.concrete.contains_key(id))
+            .map(|id| {
+                let name_str = id.to_string();
+                quote! {
+                    #[allow(dead_code, non_camel_case_types)]
+                    struct #id;
+                    impl csharp_rs::CSharp for #id {
+                        fn csharp_name(_: &csharp_rs::Config) -> String {
+                            String::from(#name_str)
+                        }
+                        fn csharp_definition(_: &csharp_rs::Config) -> String {
+                            String::new()
+                        }
+                        fn dependencies(_: &csharp_rs::Config) -> Vec<String> {
+                            Vec::new()
+                        }
+                    }
+                }
+            })
+            .collect()
+    }
+
+    /// Builds the `generic_suffix` variable expression.
+    ///
+    /// For non-concrete type params, produces `format!("<{}>", ...)`.
+    /// When all params are concrete, produces an empty string.
+    fn build_generic_suffix_expr(
+        &self,
+        type_param_idents: &[&proc_macro2::Ident],
+    ) -> TokenStream {
+        let param_name_strs: Vec<String> = type_param_idents
+            .iter()
+            .filter_map(|id| {
+                if self.concrete.contains_key(id) {
+                    None
+                } else {
+                    Some(id.to_string())
+                }
+            })
+            .collect();
+        if param_name_strs.is_empty() {
+            quote! { let generic_suffix: String = String::new(); }
+        } else {
+            quote! {
+                let generic_suffix: String = format!("<{}>", [#(#param_name_strs),*].join(", "));
+            }
+        }
+    }
+
+    /// Collects all field types from the IR for where-clause generation.
+    ///
+    /// Extracts the raw `syn::Type` references used in field positions,
+    /// which are then passed to [`build_where_predicates`] to determine
+    /// which type parameters need `CSharp` bounds.
+    fn collect_field_types(&self) -> Vec<Type> {
+        // We need to recover the original syn::Type from the IR.
+        // The field type_exprs are TokenStreams like `<T as CSharp>::csharp_name(cfg)`,
+        // but for where-clause analysis we need the original types from the generics.
+        // Instead, walk the generics and collect all type params — the where-clause
+        // builder uses `collect_used_params` which needs the actual field types.
+        //
+        // Since field types are already encoded as TokenStreams in the IR (not raw Types),
+        // we extract types by parsing back from the DeriveInput's field types which are
+        // already captured in `self.generics`. For the where-clause, we use ALL type
+        // params from generics as a conservative bound. The `build_where_predicates`
+        // function already filters by what's actually used.
+        self.generics
+            .type_params()
+            .map(|p| {
+                let ident = &p.ident;
+                syn::parse_quote!(#ident)
+            })
+            .collect()
     }
 
     /// Builds the `csharp_definition()` body that returns a complete `.cs` file.
@@ -243,6 +435,10 @@ impl DerivedCSharp {
     }
 
     /// Generates an export test function if `export` is enabled.
+    ///
+    /// For generic types, the test instantiates with concrete type substitutions
+    /// (from `#[csharp(concrete(...))]`) or `String` as a default fill type.
+    /// The file name always uses the bare name (without generic parameters).
     fn build_export_test(&self) -> TokenStream {
         if !self.export {
             return TokenStream::new();
@@ -252,6 +448,25 @@ impl DerivedCSharp {
         let test_name = quote::format_ident!("export_csharp_{}", ident.to_string().to_lowercase());
         let csharp_name = &self.csharp_name;
 
+        // Build the type reference for the export call.
+        // For generic types, substitute concrete types or String.
+        let type_ref: TokenStream = if has_type_params(&self.generics) {
+            let type_args: Vec<TokenStream> = self
+                .generics
+                .type_params()
+                .map(|p| {
+                    if let Some(concrete_ty) = self.concrete.get(&p.ident) {
+                        quote! { #concrete_ty }
+                    } else {
+                        quote! { String }
+                    }
+                })
+                .collect();
+            quote! { #ident<#(#type_args),*> }
+        } else {
+            quote! { #ident }
+        };
+
         if let Some(export_to) = &self.export_to {
             // `#[csharp(export_to = "...")]` overrides the config dir.
             let file_path = export_to.clone();
@@ -259,18 +474,19 @@ impl DerivedCSharp {
                 #[test]
                 fn #test_name() {
                     let cfg = csharp_rs::Config::from_env();
-                    csharp_rs::export_to::<#ident>(&cfg, #file_path)
+                    csharp_rs::export_to::<#type_ref>(&cfg, #file_path)
                         .expect("failed to export C# definition");
                 }
             }
         } else {
             // Resolve export directory at runtime via `cfg.export_dir()`.
+            // Use bare name (without generics) for the file name.
             quote! {
                 #[test]
                 fn #test_name() {
                     let cfg = csharp_rs::Config::from_env();
                     let file_path = format!("{}/{}.cs", cfg.export_dir().display(), #csharp_name);
-                    csharp_rs::export_to::<#ident>(&cfg, file_path)
+                    csharp_rs::export_to::<#type_ref>(&cfg, file_path)
                         .expect("failed to export C# definition");
                 }
             }
@@ -339,13 +555,19 @@ impl DerivedCSharp {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
     use crate::types::{CSharpVariant, EnumTagging, TaggedVariant, TaggedVariantData};
+    use syn::Generics;
 
     /// Helper to build a minimal record IR with one field.
     fn sample_ir(export: bool, export_to: Option<String>) -> DerivedCSharp {
         DerivedCSharp {
             rust_ident: quote::format_ident!("TestStruct"),
+            generics: Generics::default(),
+            concrete: HashMap::default(),
+            custom_bounds: None,
             csharp_name: String::from("TestStruct"),
             namespace_override: Some(String::from("Test.Ns")),
             kind: DerivedCSharpKind::Record(vec![CSharpField {
@@ -365,6 +587,9 @@ mod tests {
     fn sample_enum_ir() -> DerivedCSharp {
         DerivedCSharp {
             rust_ident: quote::format_ident!("Color"),
+            generics: Generics::default(),
+            concrete: HashMap::default(),
+            custom_bounds: None,
             csharp_name: String::from("Color"),
             namespace_override: Some(String::from("Test.Ns")),
             kind: DerivedCSharpKind::Enum(vec![
@@ -460,6 +685,9 @@ mod tests {
     fn empty_fields_generates_empty_vec_for_dependencies() {
         let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("Empty"),
+            generics: Generics::default(),
+            concrete: HashMap::default(),
+            custom_bounds: None,
             csharp_name: String::from("Empty"),
             namespace_override: Some(String::from("Ns")),
             kind: DerivedCSharpKind::Record(vec![]),
@@ -478,6 +706,9 @@ mod tests {
     fn optional_field_generates_nullable_marker() {
         let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("WithOpt"),
+            generics: Generics::default(),
+            concrete: HashMap::default(),
+            custom_bounds: None,
             csharp_name: String::from("WithOpt"),
             namespace_override: Some(String::from("Ns")),
             kind: DerivedCSharpKind::Record(vec![CSharpField {
@@ -555,6 +786,9 @@ mod tests {
     fn sample_tagged_enum_ir() -> DerivedCSharp {
         DerivedCSharp {
             rust_ident: quote::format_ident!("Message"),
+            generics: Generics::default(),
+            concrete: HashMap::default(),
+            custom_bounds: None,
             csharp_name: String::from("Message"),
             namespace_override: Some(String::from("Test.Ns")),
             kind: DerivedCSharpKind::TaggedEnum {
@@ -652,13 +886,14 @@ mod tests {
 
         // Struct/newtype variants use named format params with type_kw.
         assert!(
-            tokens.contains("sealed {type_kw} {name} : {parent}"),
+            tokens.contains("sealed {type_kw} {name} : {parent}{generics}"),
             "should contain sealed type_kw pattern for data variants:\n{tokens}"
         );
         // Unit variant uses conditional format: record with semicolon or class with braces.
+        // The generic_suffix is included via positional `{}` after the parent name.
         assert!(
-            tokens.contains("public sealed record {} : {};")
-                && tokens.contains("public sealed class {} : {} {{ }}"),
+            tokens.contains("public sealed record {} : {}{};")
+                && tokens.contains("public sealed class {} : {}{} {{ }}"),
             "should contain both record (semicolon) and class (braces) unit variant templates:\n{tokens}"
         );
         assert!(
@@ -789,9 +1024,10 @@ mod tests {
         let tokens = ir.into_token_stream().to_string();
 
         // Unit variant uses conditional format: record with semicolon or class with braces.
+        // The generic_suffix is included via positional `{}` after the parent name.
         assert!(
-            tokens.contains("public sealed record {} : {};")
-                && tokens.contains("public sealed class {} : {} {{ }}"),
+            tokens.contains("public sealed record {} : {}{};")
+                && tokens.contains("public sealed class {} : {}{} {{ }}"),
             "unit variant should contain both record (semicolon) and class (braces) templates:\n{tokens}"
         );
         assert!(
@@ -871,6 +1107,9 @@ mod tests {
     fn tagged_enum_unit_only_dependencies_empty() {
         let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("Status"),
+            generics: Generics::default(),
+            concrete: HashMap::default(),
+            custom_bounds: None,
             csharp_name: String::from("Status"),
             namespace_override: Some(String::from("Test.Ns")),
             kind: DerivedCSharpKind::TaggedEnum {
@@ -1111,6 +1350,9 @@ mod tests {
     fn sample_external_tagged_enum_ir() -> DerivedCSharp {
         DerivedCSharp {
             rust_ident: quote::format_ident!("Message"),
+            generics: Generics::default(),
+            concrete: HashMap::default(),
+            custom_bounds: None,
             csharp_name: String::from("Message"),
             namespace_override: Some(String::from("Test.Ns")),
             kind: DerivedCSharpKind::TaggedEnum {
@@ -1294,6 +1536,9 @@ mod tests {
     fn sample_adjacent_tagged_enum_ir() -> DerivedCSharp {
         DerivedCSharp {
             rust_ident: quote::format_ident!("Message"),
+            generics: Generics::default(),
+            concrete: HashMap::default(),
+            custom_bounds: None,
             csharp_name: String::from("Message"),
             namespace_override: Some(String::from("Test.Ns")),
             kind: DerivedCSharpKind::TaggedEnum {
@@ -1487,6 +1732,9 @@ mod tests {
     fn sample_untagged_enum_ir() -> DerivedCSharp {
         DerivedCSharp {
             rust_ident: quote::format_ident!("Message"),
+            generics: Generics::default(),
+            concrete: HashMap::default(),
+            custom_bounds: None,
             csharp_name: String::from("Message"),
             namespace_override: Some(String::from("Test.Ns")),
             kind: DerivedCSharpKind::TaggedEnum {
@@ -1719,6 +1967,9 @@ mod tests {
     fn record_csharp11_optional_field_no_required() {
         let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("WithOpt"),
+            generics: Generics::default(),
+            concrete: HashMap::default(),
+            custom_bounds: None,
             csharp_name: String::from("WithOpt"),
             namespace_override: Some(String::from("Ns")),
             kind: DerivedCSharpKind::Record(vec![CSharpField {
@@ -1809,6 +2060,9 @@ mod tests {
     fn record_with_optional_ref_type_has_nullable_enable() {
         let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("WithOptStr"),
+            generics: Generics::default(),
+            concrete: HashMap::default(),
+            custom_bounds: None,
             csharp_name: String::from("WithOptStr"),
             namespace_override: Some(String::from("Ns")),
             kind: DerivedCSharpKind::Record(vec![CSharpField {
@@ -1851,6 +2105,9 @@ mod tests {
     fn tagged_enum_with_optional_ref_field_has_nullable_check() {
         let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("Event"),
+            generics: Generics::default(),
+            concrete: HashMap::default(),
+            custom_bounds: None,
             csharp_name: String::from("Event"),
             namespace_override: Some(String::from("Ns")),
             kind: DerivedCSharpKind::TaggedEnum {
@@ -1896,6 +2153,9 @@ mod tests {
     fn record_with_flatten_struct_field_has_csharp_fields_call() {
         let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("Outer"),
+            generics: Generics::default(),
+            concrete: HashMap::default(),
+            custom_bounds: None,
             csharp_name: String::from("Outer"),
             namespace_override: Some(String::from("Ns")),
             kind: DerivedCSharpKind::Record(vec![
@@ -1930,6 +2190,9 @@ mod tests {
     fn record_with_flatten_hashmap_has_extension_data() {
         let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("WithExtra"),
+            generics: Generics::default(),
+            concrete: HashMap::default(),
+            custom_bounds: None,
             csharp_name: String::from("WithExtra"),
             namespace_override: Some(String::from("Ns")),
             kind: DerivedCSharpKind::Record(vec![CSharpField {
@@ -1958,6 +2221,9 @@ mod tests {
     fn flatten_struct_dependencies_uses_transitive() {
         let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("Outer"),
+            generics: Generics::default(),
+            concrete: HashMap::default(),
+            custom_bounds: None,
             csharp_name: String::from("Outer"),
             namespace_override: Some(String::from("Ns")),
             kind: DerivedCSharpKind::Record(vec![
@@ -1999,6 +2265,9 @@ mod tests {
     fn tagged_enum_struct_variant_with_flatten_struct_has_field_info() {
         let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("Event"),
+            generics: Generics::default(),
+            concrete: HashMap::default(),
+            custom_bounds: None,
             csharp_name: String::from("Event"),
             namespace_override: Some(String::from("Ns")),
             kind: DerivedCSharpKind::TaggedEnum {
@@ -2050,6 +2319,9 @@ mod tests {
     fn tagged_enum_struct_variant_with_flatten_hashmap_has_extension_data() {
         let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("Event"),
+            generics: Generics::default(),
+            concrete: HashMap::default(),
+            custom_bounds: None,
             csharp_name: String::from("Event"),
             namespace_override: Some(String::from("Ns")),
             kind: DerivedCSharpKind::TaggedEnum {
@@ -2096,6 +2368,9 @@ mod tests {
     fn tagged_enum_with_hashmap_flatten_has_nullable_directive() {
         let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("Event"),
+            generics: Generics::default(),
+            concrete: HashMap::default(),
+            custom_bounds: None,
             csharp_name: String::from("Event"),
             namespace_override: Some(String::from("Ns")),
             kind: DerivedCSharpKind::TaggedEnum {
@@ -2146,6 +2421,9 @@ mod tests {
     fn tagged_internal_stj_csharp11_with_hashmap_flatten_has_system_text_json_using() {
         let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("Event"),
+            generics: Generics::default(),
+            concrete: HashMap::default(),
+            custom_bounds: None,
             csharp_name: String::from("Event"),
             namespace_override: Some(String::from("Ns")),
             kind: DerivedCSharpKind::TaggedEnum {
@@ -2203,6 +2481,9 @@ mod tests {
     fn flatten_hashmap_dependencies_excluded() {
         let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("WithExtra"),
+            generics: Generics::default(),
+            concrete: HashMap::default(),
+            custom_bounds: None,
             csharp_name: String::from("WithExtra"),
             namespace_override: Some(String::from("Ns")),
             kind: DerivedCSharpKind::Record(vec![
@@ -2248,6 +2529,9 @@ mod tests {
     fn transparent_record_generates_converter() {
         let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("UserId"),
+            generics: Generics::default(),
+            concrete: HashMap::default(),
+            custom_bounds: None,
             csharp_name: String::from("UserId"),
             namespace_override: Some(String::from("Ns")),
             kind: DerivedCSharpKind::Record(vec![CSharpField {
@@ -2276,6 +2560,9 @@ mod tests {
     fn transparent_record_no_property_name_attribute() {
         let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("UserId"),
+            generics: Generics::default(),
+            concrete: HashMap::default(),
+            custom_bounds: None,
             csharp_name: String::from("UserId"),
             namespace_override: Some(String::from("Ns")),
             kind: DerivedCSharpKind::Record(vec![CSharpField {
@@ -2306,6 +2593,9 @@ mod tests {
     fn transparent_record_stj_has_read_and_write() {
         let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("UserId"),
+            generics: Generics::default(),
+            concrete: HashMap::default(),
+            custom_bounds: None,
             csharp_name: String::from("UserId"),
             namespace_override: Some(String::from("Ns")),
             kind: DerivedCSharpKind::Record(vec![CSharpField {
@@ -2342,6 +2632,9 @@ mod tests {
     fn transparent_record_newtonsoft_has_read_json_and_write_json() {
         let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("UserId"),
+            generics: Generics::default(),
+            concrete: HashMap::default(),
+            custom_bounds: None,
             csharp_name: String::from("UserId"),
             namespace_override: Some(String::from("Ns")),
             kind: DerivedCSharpKind::Record(vec![CSharpField {
@@ -2378,6 +2671,9 @@ mod tests {
     fn transparent_record_has_using_system() {
         let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("UserId"),
+            generics: Generics::default(),
+            concrete: HashMap::default(),
+            custom_bounds: None,
             csharp_name: String::from("UserId"),
             namespace_override: Some(String::from("Ns")),
             kind: DerivedCSharpKind::Record(vec![CSharpField {
@@ -2402,6 +2698,9 @@ mod tests {
     fn transparent_record_has_value_property() {
         let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("UserId"),
+            generics: Generics::default(),
+            concrete: HashMap::default(),
+            custom_bounds: None,
             csharp_name: String::from("UserId"),
             namespace_override: Some(String::from("Ns")),
             kind: DerivedCSharpKind::Record(vec![CSharpField {
@@ -2429,6 +2728,9 @@ mod tests {
     fn transparent_record_both_serializer_paths() {
         let ir = DerivedCSharp {
             rust_ident: quote::format_ident!("UserId"),
+            generics: Generics::default(),
+            concrete: HashMap::default(),
+            custom_bounds: None,
             csharp_name: String::from("UserId"),
             namespace_override: Some(String::from("Ns")),
             kind: DerivedCSharpKind::Record(vec![CSharpField {

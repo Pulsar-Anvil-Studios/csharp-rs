@@ -1,17 +1,20 @@
-// Rust guideline compliant 2026-03-14
+// Rust guideline compliant 2026-03-15
 //! Type dispatch and intermediate representation for C# code generation.
 //!
 //! Dispatches `syn::DeriveInput` to the appropriate handler based on the
 //! Rust data structure kind (struct with named fields, enum, etc.).
 
+pub mod generics;
 pub mod named;
 pub mod newtype;
 pub mod simple_enum;
 pub mod tagged_enum;
 
+use std::collections::HashMap;
+
 use crate::attr::container::ContainerAttr;
 use proc_macro2::{Ident, TokenStream};
-use syn::{Data, DataStruct, DeriveInput, Fields};
+use syn::{Data, DataStruct, DeriveInput, Fields, Generics, WherePredicate};
 
 /// How a field is flattened into the parent record.
 #[derive(Debug)]
@@ -127,6 +130,17 @@ pub enum DerivedCSharpKind {
 pub struct DerivedCSharp {
     /// The Rust type identifier.
     pub rust_ident: Ident,
+    /// The Rust generic parameters from the type declaration.
+    pub generics: Generics,
+    /// Concrete type substitutions from `#[csharp(concrete(T = String, ...))]`.
+    ///
+    /// Params listed here are replaced with their concrete type in the C#
+    /// output and excluded from the C# generic parameter list.
+    pub concrete: HashMap<Ident, syn::Type>,
+    /// Custom where-clause bounds from `#[csharp(bound = "...")]`.
+    ///
+    /// When `Some`, overrides the auto-generated `T: CSharp` bounds.
+    pub custom_bounds: Option<Vec<WherePredicate>>,
     /// The C# type name.
     pub csharp_name: String,
     /// Per-type namespace override from `#[csharp(namespace = "...")]`.

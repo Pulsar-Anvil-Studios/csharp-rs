@@ -1,4 +1,4 @@
-// Rust guideline compliant 2026-03-14
+// Rust guideline compliant 2026-03-15
 //! Newtype struct processing.
 //!
 //! Converts `struct Foo(Bar)` into a [`DerivedCSharp`] with a single
@@ -39,6 +39,9 @@ pub fn newtype_struct(
 
     Ok(DerivedCSharp {
         rust_ident,
+        generics: input.generics.clone(),
+        concrete: container.concrete.clone(),
+        custom_bounds: container.bound.clone(),
         csharp_name,
         namespace_override,
         kind: DerivedCSharpKind::Record(vec![field]),

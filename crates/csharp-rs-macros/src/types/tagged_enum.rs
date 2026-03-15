@@ -1,4 +1,4 @@
-// Rust guideline compliant 2026-03-14
+// Rust guideline compliant 2026-03-15
 //! Tagged enum processing for C# code generation.
 //!
 //! Converts a Rust enum with data variants into the [`DerivedCSharp`]
@@ -202,6 +202,9 @@ pub fn tagged_enum(
 
     Ok(DerivedCSharp {
         rust_ident,
+        generics: input.generics.clone(),
+        concrete: container.concrete.clone(),
+        custom_bounds: container.bound.clone(),
         csharp_name,
         namespace_override,
         kind: DerivedCSharpKind::TaggedEnum { tagging, variants },

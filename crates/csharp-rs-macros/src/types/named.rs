@@ -1,4 +1,4 @@
-// Rust guideline compliant 2026-03-14
+// Rust guideline compliant 2026-03-15
 //! Named struct processing for C# code generation.
 //!
 //! Converts a Rust struct with named fields into the [`DerivedCSharp`]
@@ -107,6 +107,9 @@ pub fn named_struct(
 
     Ok(DerivedCSharp {
         rust_ident,
+        generics: input.generics.clone(),
+        concrete: container.concrete.clone(),
+        custom_bounds: container.bound.clone(),
         csharp_name,
         namespace_override,
         kind: DerivedCSharpKind::Record(fields),

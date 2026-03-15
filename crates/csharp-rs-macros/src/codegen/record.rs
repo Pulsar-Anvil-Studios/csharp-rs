@@ -1,4 +1,4 @@
-// Rust guideline compliant 2026-03-14
+// Rust guideline compliant 2026-03-15
 //! Record (sealed record / sealed class) code generation from struct fields.
 
 use crate::types::{CSharpField, FlattenKind};
@@ -211,7 +211,7 @@ pub fn build_transparent_record_definition(
                      namespace {ns};\n\
                      \n\
                      {attr}\
-                     public sealed {type_kw} {name}\n\
+                     public sealed {type_kw} {name}{generics}\n\
                      {{\n\
                      {property}\
                      {converter}\n\
@@ -221,6 +221,7 @@ pub fn build_transparent_record_definition(
                     attr = converter_attr,
                     type_kw = type_keyword,
                     name = #csharp_name,
+                    generics = generic_suffix,
                     property = property,
                     converter = converter_block,
                 )
@@ -232,7 +233,7 @@ pub fn build_transparent_record_definition(
                      namespace {ns}\n\
                      {{\n\
                      {attr}\
-                     {ti}public sealed {type_kw} {name}\n\
+                     {ti}public sealed {type_kw} {name}{generics}\n\
                      {ti}{{\n\
                      {property}\
                      {converter}\n\
@@ -244,6 +245,7 @@ pub fn build_transparent_record_definition(
                     attr = converter_attr,
                     type_kw = type_keyword,
                     name = #csharp_name,
+                    generics = generic_suffix,
                     property = property,
                     converter = converter_block,
                 )
@@ -391,7 +393,7 @@ fn build_definition_body(
                         "\n",
                         "namespace {ns};\n",
                         "\n",
-                        "public sealed {type_kw} {name}\n",
+                        "public sealed {type_kw} {name}{generics}\n",
                         "{{\n",
                         "{fields}",
                         "}}\n",
@@ -402,6 +404,7 @@ fn build_definition_body(
                     ns = ns,
                     type_kw = type_keyword,
                     name = #csharp_name,
+                    generics = generic_suffix,
                     fields = fields,
                 )
             } else {
@@ -413,7 +416,7 @@ fn build_definition_body(
                         "\n",
                         "namespace {ns}\n",
                         "{{\n",
-                        "    public sealed {type_kw} {name}\n",
+                        "    public sealed {type_kw} {name}{generics}\n",
                         "    {{\n",
                         "{fields}",
                         "    }}\n",
@@ -425,6 +428,7 @@ fn build_definition_body(
                     ns = ns,
                     type_kw = type_keyword,
                     name = #csharp_name,
+                    generics = generic_suffix,
                     fields = fields,
                 )
             }

@@ -1,4 +1,4 @@
-// Rust guideline compliant 2026-02-10
+// Rust guideline compliant 2026-03-15
 //! Simple enum processing for C# code generation.
 //!
 //! Converts a Rust enum with only unit variants into the [`DerivedCSharp`]
@@ -64,6 +64,9 @@ pub fn simple_enum(
 
     Ok(DerivedCSharp {
         rust_ident,
+        generics: input.generics.clone(),
+        concrete: container.concrete.clone(),
+        custom_bounds: container.bound.clone(),
         csharp_name,
         namespace_override,
         kind: DerivedCSharpKind::Enum(variants),

@@ -1,4 +1,4 @@
-// Rust guideline compliant 2026-02-15
+// Rust guideline compliant 2026-03-15
 //! Tagged enum code generation (internally, adjacently, externally tagged, and
 //! untagged).
 //!
@@ -165,6 +165,10 @@ pub fn build_tagged_enum_definition(
 
     let converter_expr = build_converter_block(csharp_name, tagging, variants);
 
+    // Collect variant C# names for qualifying references when the converter
+    // is moved outside the record body (generic types).
+    let variant_csharp_names: Vec<&str> = variants.iter().map(|v| v.csharp_name.as_str()).collect();
+
     // Collect nullable-reference-type checks from all struct variant fields.
     let nullable_checks: Vec<TokenStream> = variants
         .iter()
@@ -185,7 +189,8 @@ pub fn build_tagged_enum_definition(
             let use_required = cfg.target() >= csharp_rs::CSharpVersion::CSharp11;
             let use_native_polymorphism = #is_internal
                 && matches!(cfg.serializer(), csharp_rs::Serializer::SystemTextJson)
-                && cfg.target() >= csharp_rs::CSharpVersion::CSharp11;
+                && cfg.target() >= csharp_rs::CSharpVersion::CSharp11
+                && generic_suffix.is_empty();
 
             let required_kw = if use_required { "required " } else { "" };
             let type_kw = if cfg.target().uses_records() { "record" } else { "class" };
@@ -231,20 +236,161 @@ pub fn build_tagged_enum_definition(
             // Converter
             let converter_block: String = #converter_append;
 
-            let body = if variants_block.is_empty() && converter_block.is_empty() {
+            // Factory / adapter for generic types: a non-generic class that
+            // can be referenced by `[JsonConverter(typeof(...))]` without
+            // triggering CS0416, and delegates to the generic converter.
+            //
+            // STJ: `{Name}ConverterFactory : JsonConverterFactory`
+            // Newtonsoft: `{Name}Converter : JsonConverter` (delegates to
+            //             `{Name}Converter<T>` via reflection)
+            let factory_block: String = if !generic_suffix.is_empty() {
+                let open_commas = ",".repeat(generic_suffix.matches(',').count());
+                let fbase = if use_file_scoped { "" } else { "    " };
+                let fi1 = format!("{fbase}    ");
+                let fi2 = format!("{fbase}        ");
+                match cfg.serializer() {
+                    csharp_rs::Serializer::SystemTextJson => {
+                        format!(
+                            "\n\
+                             {base}internal sealed class {name}ConverterFactory : JsonConverterFactory\n\
+                             {base}{{\n\
+                             {i1}public override bool CanConvert(Type typeToConvert) =>\n\
+                             {i2}typeToConvert.IsGenericType && typeToConvert.GetGenericTypeDefinition() == typeof({name}<{oc}>);\n\
+                             \n\
+                             {i1}public override JsonConverter CreateConverter(Type typeToConvert, JsonSerializerOptions options)\n\
+                             {i1}{{\n\
+                             {i2}var typeArgs = typeToConvert.GenericTypeArguments;\n\
+                             {i2}var converterType = typeof({name}Converter<{oc}>).MakeGenericType(typeArgs);\n\
+                             {i2}return (JsonConverter)Activator.CreateInstance(converterType)!;\n\
+                             {i1}}}\n\
+                             {base}}}",
+                            base = fbase,
+                            name = #csharp_name,
+                            oc = open_commas,
+                            i1 = fi1,
+                            i2 = fi2,
+                        )
+                    }
+                    csharp_rs::Serializer::Newtonsoft => {
+                        format!(
+                            "\n\
+                             {base}internal sealed class {name}Converter : JsonConverter\n\
+                             {base}{{\n\
+                             {i1}public override bool CanConvert(Type objectType) =>\n\
+                             {i2}objectType.IsGenericType && objectType.GetGenericTypeDefinition() == typeof({name}<{oc}>);\n\
+                             \n\
+                             {i1}public override object ReadJson(\n\
+                             {i2}JsonReader reader,\n\
+                             {i2}Type objectType,\n\
+                             {i2}object existingValue,\n\
+                             {i2}JsonSerializer serializer)\n\
+                             {i1}{{\n\
+                             {i2}var typeArgs = objectType.GenericTypeArguments;\n\
+                             {i2}var converterType = typeof({name}Converter<{oc}>).MakeGenericType(typeArgs);\n\
+                             {i2}var inner = (JsonConverter)Activator.CreateInstance(converterType)!;\n\
+                             {i2}return inner.ReadJson(reader, objectType, existingValue, serializer)!;\n\
+                             {i1}}}\n\
+                             \n\
+                             {i1}public override void WriteJson(\n\
+                             {i2}JsonWriter writer,\n\
+                             {i2}object value,\n\
+                             {i2}JsonSerializer serializer)\n\
+                             {i1}{{\n\
+                             {i2}var objectType = value.GetType();\n\
+                             {i2}while (objectType != null && !(objectType.IsGenericType && objectType.GetGenericTypeDefinition() == typeof({name}<{oc}>)))\n\
+                             {i2}    objectType = objectType.BaseType;\n\
+                             {i2}var typeArgs = objectType!.GenericTypeArguments;\n\
+                             {i2}var converterType = typeof({name}Converter<{oc}>).MakeGenericType(typeArgs);\n\
+                             {i2}var inner = (JsonConverter)Activator.CreateInstance(converterType)!;\n\
+                             {i2}inner.WriteJson(writer, value, serializer);\n\
+                             {i1}}}\n\
+                             {base}}}",
+                            base = fbase,
+                            name = #csharp_name,
+                            oc = open_commas,
+                            i1 = fi1,
+                            i2 = fi2,
+                        )
+                    }
+                }
+            } else {
+                String::new()
+            };
+
+            // For generic tagged enums, move converter classes outside
+            // the record body to avoid CS0416 (typeof cannot reference
+            // members of open generic types). The classes use `internal`
+            // visibility instead of `private` at namespace level.
+            //
+            // For STJ generics: the converter is already generic
+            //   (`{Name}Converter<T>`), so it works outside directly.
+            // For Newtonsoft generics: the converter was non-generic
+            //   (`{Name}Converter : JsonConverter`). We make it generic
+            //   (`{Name}Converter<T> : JsonConverter`) so `T` stays in
+            //   scope, and add a non-generic adapter that delegates via
+            //   reflection (same pattern as the STJ ConverterFactory).
+            let (converter_inside, converter_outside) = if !generic_suffix.is_empty() {
+                // Generic: move converter outside the record body.
+                // Adjust indentation: base_indent is record-member level, but
+                // outside the record we need namespace level (type_indent).
+                let ns_indent = if use_file_scoped { "" } else { "    " };
+                let mut adjusted = converter_block
+                    .replace("private sealed class", "internal sealed class")
+                    .replace(&format!("\n{}", base_indent), &format!("\n{}", ns_indent));
+
+                // For Newtonsoft generics, the converter class was non-generic
+                // (using `object` params + `CanConvert`). Make it generic by
+                // adding `<T>` so that `T` is in scope for the body.
+                // The `CanConvert` / `object` signature stays but `T` is usable.
+                if matches!(cfg.serializer(), csharp_rs::Serializer::Newtonsoft) {
+                    adjusted = adjusted.replace(
+                        &format!("class {}Converter : JsonConverter", #csharp_name),
+                        &format!("class {}Converter<T> : JsonConverter", #csharp_name),
+                    );
+                }
+
+                // Qualify nested variant type references: variant records are
+                // still nested inside the generic parent type, so references
+                // like `new Data` or `case Data` must become
+                // `new GenericResponse<T>.Data` / `case GenericResponse<T>.Data`.
+                let parent_qualified = format!("{}{}", #csharp_name, generic_suffix);
+                let variant_names: Vec<&str> = vec![#(#variant_csharp_names),*];
+                for vn in &variant_names {
+                    adjusted = adjusted
+                        .replace(
+                            &format!("new {vn}"),
+                            &format!("new {parent_qualified}.{vn}"),
+                        )
+                        .replace(
+                            &format!("case {vn} "),
+                            &format!("case {parent_qualified}.{vn} "),
+                        )
+                        .replace(
+                            &format!("case {vn}:"),
+                            &format!("case {parent_qualified}.{vn}:"),
+                        );
+                }
+
+                (String::new(), format!("{adjusted}{factory_block}"))
+            } else {
+                // Non-generic: converter stays nested inside the record body.
+                (format!("{converter_block}{factory_block}"), String::new())
+            };
+
+            let body = if variants_block.is_empty() && converter_inside.is_empty() {
                 String::from(";")
             } else {
                 if use_file_scoped {
                     format!(
                         "\n{{\n{variants}{converter}\n}}",
                         variants = variants_block,
-                        converter = converter_block,
+                        converter = converter_inside,
                     )
                 } else {
                     format!(
                         "\n    {{\n{variants}{converter}\n    }}",
                         variants = variants_block,
-                        converter = converter_block,
+                        converter = converter_inside,
                     )
                 }
             };
@@ -267,14 +413,17 @@ pub fn build_tagged_enum_definition(
                      namespace {ns};\n\
                      \n\
                      {attrs}\n\
-                     public abstract {type_kw} {name}{body}\n",
+                     public abstract {type_kw} {name}{generics}{body}\n\
+                     {outside}",
                     nullable = nullable_directive,
                     using = using_block,
                     ns = ns,
                     attrs = class_attrs,
                     type_kw = type_kw,
                     name = #csharp_name,
+                    generics = generic_suffix,
                     body = body,
+                    outside = converter_outside,
                 )
             } else {
                 format!(
@@ -285,7 +434,8 @@ pub fn build_tagged_enum_definition(
                      namespace {ns}\n\
                      {{\n\
                      {ti}{attrs}\n\
-                     {ti}public abstract {type_kw} {name}{body}\n\
+                     {ti}public abstract {type_kw} {name}{generics}{body}\n\
+                     {outside}\
                      }}\n",
                     nullable = nullable_directive,
                     using = using_block,
@@ -294,7 +444,9 @@ pub fn build_tagged_enum_definition(
                     attrs = class_attrs,
                     type_kw = type_kw,
                     name = #csharp_name,
+                    generics = generic_suffix,
                     body = body,
+                    outside = converter_outside,
                 )
             }
         }
@@ -333,19 +485,43 @@ fn build_class_attributes_expr(
             native_attrs.pop();
         }
 
-        let converter_attr = format!("[JsonConverter(typeof({csharp_name}Converter))]");
+        let converter_attr_non_generic = format!("[JsonConverter(typeof({csharp_name}Converter))]");
+        let converter_factory_attr = format!("[JsonConverter(typeof({csharp_name}ConverterFactory))]");
 
         quote! {
             if use_native_polymorphism {
                 String::from(#native_attrs)
+            } else if !generic_suffix.is_empty() {
+                match cfg.serializer() {
+                    csharp_rs::Serializer::SystemTextJson => {
+                        String::from(#converter_factory_attr)
+                    }
+                    csharp_rs::Serializer::Newtonsoft => {
+                        String::from(#converter_attr_non_generic)
+                    }
+                }
             } else {
-                String::from(#converter_attr)
+                String::from(#converter_attr_non_generic)
             }
         }
     } else {
         // Non-internal tagging always uses converter.
-        let converter_attr = format!("[JsonConverter(typeof({csharp_name}Converter))]");
-        quote! { String::from(#converter_attr) }
+        let converter_attr_non_generic = format!("[JsonConverter(typeof({csharp_name}Converter))]");
+        let converter_factory_attr = format!("[JsonConverter(typeof({csharp_name}ConverterFactory))]");
+        quote! {
+            if !generic_suffix.is_empty() {
+                match cfg.serializer() {
+                    csharp_rs::Serializer::SystemTextJson => {
+                        String::from(#converter_factory_attr)
+                    }
+                    csharp_rs::Serializer::Newtonsoft => {
+                        String::from(#converter_attr_non_generic)
+                    }
+                }
+            } else {
+                String::from(#converter_attr_non_generic)
+            }
+        }
     }
 }
 
@@ -377,9 +553,9 @@ fn build_single_variant(parent_name: &str, variant: &TaggedVariant) -> TokenStre
             // cannot use the semicolon shorthand)
             quote! {
                 if type_kw == "record" {
-                    format!("{}public sealed record {} : {};", base_indent, #variant_name, #parent_name)
+                    format!("{}public sealed record {} : {}{};", base_indent, #variant_name, #parent_name, generic_suffix)
                 } else {
-                    format!("{}public sealed class {} : {} {{ }}", base_indent, #variant_name, #parent_name)
+                    format!("{}public sealed class {} : {}{} {{ }}", base_indent, #variant_name, #parent_name, generic_suffix)
                 }
             }
         }
@@ -389,7 +565,7 @@ fn build_single_variant(parent_name: &str, variant: &TaggedVariant) -> TokenStre
                 {
                     let csharp_type = #type_expr;
                     format!(
-                        "{base}public sealed {type_kw} {name} : {parent}\n\
+                        "{base}public sealed {type_kw} {name} : {parent}{generics}\n\
                          {base}{{\n\
                          {prop}[{attr}(\"Value\")]\n\
                          {prop}public {req}{ty} Value {{ get; {acc}; }}\n\
@@ -398,6 +574,7 @@ fn build_single_variant(parent_name: &str, variant: &TaggedVariant) -> TokenStre
                         type_kw = type_kw,
                         name = #variant_name,
                         parent = #parent_name,
+                        generics = generic_suffix,
                         prop = prop_indent,
                         attr = attr_name,
                         req = required_kw,
@@ -430,7 +607,7 @@ fn build_struct_variant(
             #(#field_exprs)*
             let fields_block = field_parts.join("\n");
             format!(
-                "{base}public sealed {type_kw} {name} : {parent}\n\
+                "{base}public sealed {type_kw} {name} : {parent}{generics}\n\
                  {base}{{\n\
                  {fields}\n\
                  {base}}}",
@@ -438,6 +615,7 @@ fn build_struct_variant(
                 type_kw = type_kw,
                 name = #variant_name,
                 parent = #parent_name,
+                generics = generic_suffix,
                 fields = fields_block,
             )
         }
@@ -790,9 +968,9 @@ fn build_internal_stj_converter(
 
             format!(
                 "\n\
-                 {base}private sealed class {name}Converter : JsonConverter<{name}>\n\
+                 {base}private sealed class {name}Converter{gen} : JsonConverter<{name}{gen}>\n\
                  {base}{{\n\
-                 {i1}public override {name} Read(\n\
+                 {i1}public override {name}{gen} Read(\n\
                  {i2}ref Utf8JsonReader reader,\n\
                  {i2}Type typeToConvert,\n\
                  {i2}JsonSerializerOptions options)\n\
@@ -810,7 +988,7 @@ fn build_internal_stj_converter(
                  \n\
                  {i1}public override void Write(\n\
                  {i2}Utf8JsonWriter writer,\n\
-                 {i2}{name} value,\n\
+                 {i2}{name}{gen} value,\n\
                  {i2}JsonSerializerOptions options)\n\
                  {i1}{{\n\
                  {i2}writer.WriteStartObject();\n\
@@ -823,6 +1001,7 @@ fn build_internal_stj_converter(
                  {base}}}",
                 base = base_indent,
                 name = #csharp_name,
+                gen = generic_suffix,
                 i1 = converter_inner,
                 i2 = converter_inner2,
                 tag = #tag,
@@ -835,7 +1014,13 @@ fn build_internal_stj_converter(
 
 /// Builds the Newtonsoft `JsonConverter<T>` for internally tagged enums.
 ///
-/// References runtime variable `base_indent` which must be in scope.
+/// References runtime variables `base_indent` and `generic_suffix` which must
+/// be in scope. For generic types, emits a non-generic `JsonConverter` with
+/// `CanConvert` override; for non-generic types, emits `JsonConverter<T>`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "branches for generic vs non-generic Newtonsoft converter"
+)]
 fn build_internal_newtonsoft_converter(
     csharp_name: &str,
     tag: &str,
@@ -882,48 +1067,97 @@ fn build_internal_newtonsoft_converter(
             let read_block = read_parts.join("\n");
             let write_block = write_parts.join("\n");
 
-            format!(
-                "\n\
-                 {base}private sealed class {name}Converter : JsonConverter<{name}>\n\
-                 {base}{{\n\
-                 {i1}public override {name} ReadJson(\n\
-                 {i2}JsonReader reader,\n\
-                 {i2}Type objectType,\n\
-                 {i2}{name} existingValue,\n\
-                 {i2}bool hasExistingValue,\n\
-                 {i2}JsonSerializer serializer)\n\
-                 {i1}{{\n\
-                 {i2}var obj = JObject.Load(reader);\n\
-                 {i2}var tag = (string)obj[\"{tag}\"];\n\
-                 \n\
-                 {i2}return tag switch\n\
-                 {i2}{{\n\
-                 {read}\n\
-                 {i2}    _ => throw new JsonException($\"Unknown discriminator value: {{tag}}\")\n\
-                 {i2}}};\n\
-                 {i1}}}\n\
-                 \n\
-                 {i1}public override void WriteJson(\n\
-                 {i2}JsonWriter writer,\n\
-                 {i2}{name} value,\n\
-                 {i2}JsonSerializer serializer)\n\
-                 {i1}{{\n\
-                 {i2}writer.WriteStartObject();\n\
-                 {i2}switch (value)\n\
-                 {i2}{{\n\
-                 {write}\n\
-                 {i2}}}\n\
-                 {i2}writer.WriteEndObject();\n\
-                 {i1}}}\n\
-                 {base}}}",
-                base = base_indent,
-                name = #csharp_name,
-                i1 = converter_inner,
-                i2 = converter_inner2,
-                tag = #tag,
-                read = read_block,
-                write = write_block,
-            )
+            if generic_suffix.is_empty() {
+                format!(
+                    "\n\
+                     {base}private sealed class {name}Converter : JsonConverter<{name}>\n\
+                     {base}{{\n\
+                     {i1}public override {name} ReadJson(\n\
+                     {i2}JsonReader reader,\n\
+                     {i2}Type objectType,\n\
+                     {i2}{name} existingValue,\n\
+                     {i2}bool hasExistingValue,\n\
+                     {i2}JsonSerializer serializer)\n\
+                     {i1}{{\n\
+                     {i2}var obj = JObject.Load(reader);\n\
+                     {i2}var tag = (string)obj[\"{tag}\"];\n\
+                     \n\
+                     {i2}return tag switch\n\
+                     {i2}{{\n\
+                     {read}\n\
+                     {i2}    _ => throw new JsonException($\"Unknown discriminator value: {{tag}}\")\n\
+                     {i2}}};\n\
+                     {i1}}}\n\
+                     \n\
+                     {i1}public override void WriteJson(\n\
+                     {i2}JsonWriter writer,\n\
+                     {i2}{name} value,\n\
+                     {i2}JsonSerializer serializer)\n\
+                     {i1}{{\n\
+                     {i2}writer.WriteStartObject();\n\
+                     {i2}switch (value)\n\
+                     {i2}{{\n\
+                     {write}\n\
+                     {i2}}}\n\
+                     {i2}writer.WriteEndObject();\n\
+                     {i1}}}\n\
+                     {base}}}",
+                    base = base_indent,
+                    name = #csharp_name,
+                    i1 = converter_inner,
+                    i2 = converter_inner2,
+                    tag = #tag,
+                    read = read_block,
+                    write = write_block,
+                )
+            } else {
+                let open_commas = ",".repeat(generic_suffix.matches(',').count());
+                format!(
+                    "\n\
+                     {base}private sealed class {name}Converter : JsonConverter\n\
+                     {base}{{\n\
+                     {i1}public override bool CanConvert(Type objectType) =>\n\
+                     {i2}objectType.IsGenericType && objectType.GetGenericTypeDefinition() == typeof({name}<{oc}>);\n\
+                     \n\
+                     {i1}public override object ReadJson(\n\
+                     {i2}JsonReader reader,\n\
+                     {i2}Type objectType,\n\
+                     {i2}object existingValue,\n\
+                     {i2}JsonSerializer serializer)\n\
+                     {i1}{{\n\
+                     {i2}var obj = JObject.Load(reader);\n\
+                     {i2}var tag = (string)obj[\"{tag}\"];\n\
+                     \n\
+                     {i2}return tag switch\n\
+                     {i2}{{\n\
+                     {read}\n\
+                     {i2}    _ => throw new JsonException($\"Unknown discriminator value: {{tag}}\")\n\
+                     {i2}}};\n\
+                     {i1}}}\n\
+                     \n\
+                     {i1}public override void WriteJson(\n\
+                     {i2}JsonWriter writer,\n\
+                     {i2}object value,\n\
+                     {i2}JsonSerializer serializer)\n\
+                     {i1}{{\n\
+                     {i2}writer.WriteStartObject();\n\
+                     {i2}switch (value)\n\
+                     {i2}{{\n\
+                     {write}\n\
+                     {i2}}}\n\
+                     {i2}writer.WriteEndObject();\n\
+                     {i1}}}\n\
+                     {base}}}",
+                    base = base_indent,
+                    name = #csharp_name,
+                    oc = open_commas,
+                    i1 = converter_inner,
+                    i2 = converter_inner2,
+                    tag = #tag,
+                    read = read_block,
+                    write = write_block,
+                )
+            }
         }
     }
 }
@@ -1216,7 +1450,12 @@ fn build_newtonsoft_write_arm_internal(variant: &TaggedVariant, tag: &str) -> To
 /// (e.g., `"Quit"`), while data variants serialize to single-property objects
 /// (e.g., `{"Text": "hello"}` or `{"Request": {"id": "abc"}}`).
 ///
-/// References runtime variable `base_indent` which must be in scope.
+/// References runtime variables `base_indent` and `generic_suffix` which must
+/// be in scope.
+#[expect(
+    clippy::too_many_lines,
+    reason = "builds complete external STJ converter with generic suffix"
+)]
 fn build_external_stj_converter(csharp_name: &str, variants: &[TaggedVariant]) -> TokenStream {
     let read_unit_arms: Vec<TokenStream> = variants
         .iter()
@@ -1271,9 +1510,9 @@ fn build_external_stj_converter(csharp_name: &str, variants: &[TaggedVariant]) -
 
             format!(
                 "\n\
-                 {base}private sealed class {name}Converter : JsonConverter<{name}>\n\
+                 {base}private sealed class {name}Converter{gen} : JsonConverter<{name}{gen}>\n\
                  {base}{{\n\
-                 {i1}public override {name} Read(\n\
+                 {i1}public override {name}{gen} Read(\n\
                  {i2}ref Utf8JsonReader reader,\n\
                  {i2}Type typeToConvert,\n\
                  {i2}JsonSerializerOptions options)\n\
@@ -1306,7 +1545,7 @@ fn build_external_stj_converter(csharp_name: &str, variants: &[TaggedVariant]) -
                  \n\
                  {i1}public override void Write(\n\
                  {i2}Utf8JsonWriter writer,\n\
-                 {i2}{name} value,\n\
+                 {i2}{name}{gen} value,\n\
                  {i2}JsonSerializerOptions options)\n\
                  {i1}{{\n\
                  {i2}switch (value)\n\
@@ -1317,6 +1556,7 @@ fn build_external_stj_converter(csharp_name: &str, variants: &[TaggedVariant]) -
                  {base}}}",
                 base = base_indent,
                 name = #csharp_name,
+                gen = generic_suffix,
                 i1 = converter_inner,
                 i2 = converter_inner2,
                 i3 = converter_inner3,
@@ -1541,61 +1781,123 @@ fn build_external_newtonsoft_converter(
             let read_object_block = read_object_parts.join("\n");
             let write_block = write_parts.join("\n");
 
-            format!(
-                "\n\
-                 {base}private sealed class {name}Converter : JsonConverter<{name}>\n\
-                 {base}{{\n\
-                 {i1}public override {name} ReadJson(\n\
-                 {i2}JsonReader reader,\n\
-                 {i2}Type objectType,\n\
-                 {i2}{name} existingValue,\n\
-                 {i2}bool hasExistingValue,\n\
-                 {i2}JsonSerializer serializer)\n\
-                 {i1}{{\n\
-                 {i2}if (reader.TokenType == JsonToken.String)\n\
-                 {i2}{{\n\
-                 {i3}var tag = (string)JValue.ReadFrom(reader);\n\
-                 {i3}return tag switch\n\
-                 {i3}{{\n\
-                 {read_unit}\n\
-                 {i3}    _ => throw new JsonException($\"Unknown unit variant: {{tag}}\")\n\
-                 {i3}}};\n\
-                 {i2}}}\n\
-                 \n\
-                 {i2}if (reader.TokenType == JsonToken.StartObject)\n\
-                 {i2}{{\n\
-                 {i3}var obj = JObject.Load(reader);\n\
-                 {i3}var prop = obj.Properties().First();\n\
-                 {i3}return prop.Name switch\n\
-                 {i3}{{\n\
-                 {read_obj}\n\
-                 {i3}    _ => throw new JsonException($\"Unknown variant: {{prop.Name}}\")\n\
-                 {i3}}};\n\
-                 {i2}}}\n\
-                 \n\
-                 {i2}throw new JsonException($\"Unexpected token: {{reader.TokenType}}\");\n\
-                 {i1}}}\n\
-                 \n\
-                 {i1}public override void WriteJson(\n\
-                 {i2}JsonWriter writer,\n\
-                 {i2}{name} value,\n\
-                 {i2}JsonSerializer serializer)\n\
-                 {i1}{{\n\
-                 {i2}switch (value)\n\
-                 {i2}{{\n\
-                 {write}\n\
-                 {i2}}}\n\
-                 {i1}}}\n\
-                 {base}}}",
-                base = base_indent,
-                name = #csharp_name,
-                i1 = converter_inner,
-                i2 = converter_inner2,
-                i3 = converter_inner3,
-                read_unit = read_unit_block,
-                read_obj = read_object_block,
-                write = write_block,
-            )
+            if generic_suffix.is_empty() {
+                format!(
+                    "\n\
+                     {base}private sealed class {name}Converter : JsonConverter<{name}>\n\
+                     {base}{{\n\
+                     {i1}public override {name} ReadJson(\n\
+                     {i2}JsonReader reader,\n\
+                     {i2}Type objectType,\n\
+                     {i2}{name} existingValue,\n\
+                     {i2}bool hasExistingValue,\n\
+                     {i2}JsonSerializer serializer)\n\
+                     {i1}{{\n\
+                     {i2}if (reader.TokenType == JsonToken.String)\n\
+                     {i2}{{\n\
+                     {i3}var tag = (string)JValue.ReadFrom(reader);\n\
+                     {i3}return tag switch\n\
+                     {i3}{{\n\
+                     {read_unit}\n\
+                     {i3}    _ => throw new JsonException($\"Unknown unit variant: {{tag}}\")\n\
+                     {i3}}};\n\
+                     {i2}}}\n\
+                     \n\
+                     {i2}if (reader.TokenType == JsonToken.StartObject)\n\
+                     {i2}{{\n\
+                     {i3}var obj = JObject.Load(reader);\n\
+                     {i3}var prop = obj.Properties().First();\n\
+                     {i3}return prop.Name switch\n\
+                     {i3}{{\n\
+                     {read_obj}\n\
+                     {i3}    _ => throw new JsonException($\"Unknown variant: {{prop.Name}}\")\n\
+                     {i3}}};\n\
+                     {i2}}}\n\
+                     \n\
+                     {i2}throw new JsonException($\"Unexpected token: {{reader.TokenType}}\");\n\
+                     {i1}}}\n\
+                     \n\
+                     {i1}public override void WriteJson(\n\
+                     {i2}JsonWriter writer,\n\
+                     {i2}{name} value,\n\
+                     {i2}JsonSerializer serializer)\n\
+                     {i1}{{\n\
+                     {i2}switch (value)\n\
+                     {i2}{{\n\
+                     {write}\n\
+                     {i2}}}\n\
+                     {i1}}}\n\
+                     {base}}}",
+                    base = base_indent,
+                    name = #csharp_name,
+                    i1 = converter_inner,
+                    i2 = converter_inner2,
+                    i3 = converter_inner3,
+                    read_unit = read_unit_block,
+                    read_obj = read_object_block,
+                    write = write_block,
+                )
+            } else {
+                let open_commas = ",".repeat(generic_suffix.matches(',').count());
+                format!(
+                    "\n\
+                     {base}private sealed class {name}Converter : JsonConverter\n\
+                     {base}{{\n\
+                     {i1}public override bool CanConvert(Type objectType) =>\n\
+                     {i2}objectType.IsGenericType && objectType.GetGenericTypeDefinition() == typeof({name}<{oc}>);\n\
+                     \n\
+                     {i1}public override object ReadJson(\n\
+                     {i2}JsonReader reader,\n\
+                     {i2}Type objectType,\n\
+                     {i2}object existingValue,\n\
+                     {i2}JsonSerializer serializer)\n\
+                     {i1}{{\n\
+                     {i2}if (reader.TokenType == JsonToken.String)\n\
+                     {i2}{{\n\
+                     {i3}var tag = (string)JValue.ReadFrom(reader);\n\
+                     {i3}return tag switch\n\
+                     {i3}{{\n\
+                     {read_unit}\n\
+                     {i3}    _ => throw new JsonException($\"Unknown unit variant: {{tag}}\")\n\
+                     {i3}}};\n\
+                     {i2}}}\n\
+                     \n\
+                     {i2}if (reader.TokenType == JsonToken.StartObject)\n\
+                     {i2}{{\n\
+                     {i3}var obj = JObject.Load(reader);\n\
+                     {i3}var prop = obj.Properties().First();\n\
+                     {i3}return prop.Name switch\n\
+                     {i3}{{\n\
+                     {read_obj}\n\
+                     {i3}    _ => throw new JsonException($\"Unknown variant: {{prop.Name}}\")\n\
+                     {i3}}};\n\
+                     {i2}}}\n\
+                     \n\
+                     {i2}throw new JsonException($\"Unexpected token: {{reader.TokenType}}\");\n\
+                     {i1}}}\n\
+                     \n\
+                     {i1}public override void WriteJson(\n\
+                     {i2}JsonWriter writer,\n\
+                     {i2}object value,\n\
+                     {i2}JsonSerializer serializer)\n\
+                     {i1}{{\n\
+                     {i2}switch (value)\n\
+                     {i2}{{\n\
+                     {write}\n\
+                     {i2}}}\n\
+                     {i1}}}\n\
+                     {base}}}",
+                    base = base_indent,
+                    name = #csharp_name,
+                    oc = open_commas,
+                    i1 = converter_inner,
+                    i2 = converter_inner2,
+                    i3 = converter_inner3,
+                    read_unit = read_unit_block,
+                    read_obj = read_object_block,
+                    write = write_block,
+                )
+            }
         }
     }
 }
@@ -1797,9 +2099,9 @@ fn build_adjacent_stj_converter(
 
             format!(
                 "\n\
-                 {base}private sealed class {name}Converter : JsonConverter<{name}>\n\
+                 {base}private sealed class {name}Converter{gen} : JsonConverter<{name}{gen}>\n\
                  {base}{{\n\
-                 {i1}public override {name} Read(\n\
+                 {i1}public override {name}{gen} Read(\n\
                  {i2}ref Utf8JsonReader reader,\n\
                  {i2}Type typeToConvert,\n\
                  {i2}JsonSerializerOptions options)\n\
@@ -1817,7 +2119,7 @@ fn build_adjacent_stj_converter(
                  \n\
                  {i1}public override void Write(\n\
                  {i2}Utf8JsonWriter writer,\n\
-                 {i2}{name} value,\n\
+                 {i2}{name}{gen} value,\n\
                  {i2}JsonSerializerOptions options)\n\
                  {i1}{{\n\
                  {i2}switch (value)\n\
@@ -1828,6 +2130,7 @@ fn build_adjacent_stj_converter(
                  {base}}}",
                 base = base_indent,
                 name = #csharp_name,
+                gen = generic_suffix,
                 i1 = converter_inner,
                 i2 = converter_inner2,
                 tag = #tag,
@@ -1988,7 +2291,12 @@ fn build_adjacent_stj_write_arm(variant: &TaggedVariant, tag: &str, content: &st
 
 /// Builds the Newtonsoft `JsonConverter<T>` for adjacently tagged enums.
 ///
-/// References runtime variable `base_indent` which must be in scope.
+/// References runtime variables `base_indent` and `generic_suffix` which must
+/// be in scope.
+#[expect(
+    clippy::too_many_lines,
+    reason = "branches for generic vs non-generic Newtonsoft converter"
+)]
 fn build_adjacent_newtonsoft_converter(
     csharp_name: &str,
     tag: &str,
@@ -2031,46 +2339,93 @@ fn build_adjacent_newtonsoft_converter(
             let read_block = read_parts.join("\n");
             let write_block = write_parts.join("\n");
 
-            format!(
-                "\n\
-                 {base}private sealed class {name}Converter : JsonConverter<{name}>\n\
-                 {base}{{\n\
-                 {i1}public override {name} ReadJson(\n\
-                 {i2}JsonReader reader,\n\
-                 {i2}Type objectType,\n\
-                 {i2}{name} existingValue,\n\
-                 {i2}bool hasExistingValue,\n\
-                 {i2}JsonSerializer serializer)\n\
-                 {i1}{{\n\
-                 {i2}var obj = JObject.Load(reader);\n\
-                 {i2}var tag = (string)obj[\"{tag}\"];\n\
-                 \n\
-                 {i2}return tag switch\n\
-                 {i2}{{\n\
-                 {read}\n\
-                 {i2}    _ => throw new JsonException($\"Unknown discriminator value: {{tag}}\")\n\
-                 {i2}}};\n\
-                 {i1}}}\n\
-                 \n\
-                 {i1}public override void WriteJson(\n\
-                 {i2}JsonWriter writer,\n\
-                 {i2}{name} value,\n\
-                 {i2}JsonSerializer serializer)\n\
-                 {i1}{{\n\
-                 {i2}switch (value)\n\
-                 {i2}{{\n\
-                 {write}\n\
-                 {i2}}}\n\
-                 {i1}}}\n\
-                 {base}}}",
-                base = base_indent,
-                name = #csharp_name,
-                i1 = converter_inner,
-                i2 = converter_inner2,
-                tag = #tag,
-                read = read_block,
-                write = write_block,
-            )
+            if generic_suffix.is_empty() {
+                format!(
+                    "\n\
+                     {base}private sealed class {name}Converter : JsonConverter<{name}>\n\
+                     {base}{{\n\
+                     {i1}public override {name} ReadJson(\n\
+                     {i2}JsonReader reader,\n\
+                     {i2}Type objectType,\n\
+                     {i2}{name} existingValue,\n\
+                     {i2}bool hasExistingValue,\n\
+                     {i2}JsonSerializer serializer)\n\
+                     {i1}{{\n\
+                     {i2}var obj = JObject.Load(reader);\n\
+                     {i2}var tag = (string)obj[\"{tag}\"];\n\
+                     \n\
+                     {i2}return tag switch\n\
+                     {i2}{{\n\
+                     {read}\n\
+                     {i2}    _ => throw new JsonException($\"Unknown discriminator value: {{tag}}\")\n\
+                     {i2}}};\n\
+                     {i1}}}\n\
+                     \n\
+                     {i1}public override void WriteJson(\n\
+                     {i2}JsonWriter writer,\n\
+                     {i2}{name} value,\n\
+                     {i2}JsonSerializer serializer)\n\
+                     {i1}{{\n\
+                     {i2}switch (value)\n\
+                     {i2}{{\n\
+                     {write}\n\
+                     {i2}}}\n\
+                     {i1}}}\n\
+                     {base}}}",
+                    base = base_indent,
+                    name = #csharp_name,
+                    i1 = converter_inner,
+                    i2 = converter_inner2,
+                    tag = #tag,
+                    read = read_block,
+                    write = write_block,
+                )
+            } else {
+                let open_commas = ",".repeat(generic_suffix.matches(',').count());
+                format!(
+                    "\n\
+                     {base}private sealed class {name}Converter : JsonConverter\n\
+                     {base}{{\n\
+                     {i1}public override bool CanConvert(Type objectType) =>\n\
+                     {i2}objectType.IsGenericType && objectType.GetGenericTypeDefinition() == typeof({name}<{oc}>);\n\
+                     \n\
+                     {i1}public override object ReadJson(\n\
+                     {i2}JsonReader reader,\n\
+                     {i2}Type objectType,\n\
+                     {i2}object existingValue,\n\
+                     {i2}JsonSerializer serializer)\n\
+                     {i1}{{\n\
+                     {i2}var obj = JObject.Load(reader);\n\
+                     {i2}var tag = (string)obj[\"{tag}\"];\n\
+                     \n\
+                     {i2}return tag switch\n\
+                     {i2}{{\n\
+                     {read}\n\
+                     {i2}    _ => throw new JsonException($\"Unknown discriminator value: {{tag}}\")\n\
+                     {i2}}};\n\
+                     {i1}}}\n\
+                     \n\
+                     {i1}public override void WriteJson(\n\
+                     {i2}JsonWriter writer,\n\
+                     {i2}object value,\n\
+                     {i2}JsonSerializer serializer)\n\
+                     {i1}{{\n\
+                     {i2}switch (value)\n\
+                     {i2}{{\n\
+                     {write}\n\
+                     {i2}}}\n\
+                     {i1}}}\n\
+                     {base}}}",
+                    base = base_indent,
+                    name = #csharp_name,
+                    oc = open_commas,
+                    i1 = converter_inner,
+                    i2 = converter_inner2,
+                    tag = #tag,
+                    read = read_block,
+                    write = write_block,
+                )
+            }
         }
     }
 }
@@ -2278,9 +2633,9 @@ fn build_untagged_stj_converter(csharp_name: &str, variants: &[TaggedVariant]) -
 
             format!(
                 "\n\
-                 {base}private sealed class {name}Converter : JsonConverter<{name}>\n\
+                 {base}private sealed class {name}Converter{gen} : JsonConverter<{name}{gen}>\n\
                  {base}{{\n\
-                 {i1}public override {name} Read(\n\
+                 {i1}public override {name}{gen} Read(\n\
                  {i2}ref Utf8JsonReader reader,\n\
                  {i2}Type typeToConvert,\n\
                  {i2}JsonSerializerOptions options)\n\
@@ -2295,7 +2650,7 @@ fn build_untagged_stj_converter(csharp_name: &str, variants: &[TaggedVariant]) -
                  \n\
                  {i1}public override void Write(\n\
                  {i2}Utf8JsonWriter writer,\n\
-                 {i2}{name} value,\n\
+                 {i2}{name}{gen} value,\n\
                  {i2}JsonSerializerOptions options)\n\
                  {i1}{{\n\
                  {i2}switch (value)\n\
@@ -2306,6 +2661,7 @@ fn build_untagged_stj_converter(csharp_name: &str, variants: &[TaggedVariant]) -
                  {base}}}",
                 base = base_indent,
                 name = #csharp_name,
+                gen = generic_suffix,
                 i1 = converter_inner,
                 i2 = converter_inner2,
                 read = read_block,
@@ -2452,7 +2808,12 @@ fn build_untagged_stj_write_arm(variant: &TaggedVariant) -> TokenStream {
 
 /// Builds the Newtonsoft `JsonConverter<T>` for untagged enums.
 ///
-/// References runtime variable `base_indent` which must be in scope.
+/// References runtime variables `base_indent` and `generic_suffix` which must
+/// be in scope.
+#[expect(
+    clippy::too_many_lines,
+    reason = "branches for generic vs non-generic Newtonsoft converter"
+)]
 fn build_untagged_newtonsoft_converter(
     csharp_name: &str,
     variants: &[TaggedVariant],
@@ -2493,42 +2854,85 @@ fn build_untagged_newtonsoft_converter(
             let read_block = read_parts.join("\n");
             let write_block = write_parts.join("\n");
 
-            format!(
-                "\n\
-                 {base}private sealed class {name}Converter : JsonConverter<{name}>\n\
-                 {base}{{\n\
-                 {i1}public override {name} ReadJson(\n\
-                 {i2}JsonReader reader,\n\
-                 {i2}Type objectType,\n\
-                 {i2}{name} existingValue,\n\
-                 {i2}bool hasExistingValue,\n\
-                 {i2}JsonSerializer serializer)\n\
-                 {i1}{{\n\
-                 {i2}var token = JToken.ReadFrom(reader);\n\
-                 \n\
-                 {read}\n\
-                 \n\
-                 {i2}throw new JsonException(\"No matching variant found for {name}\");\n\
-                 {i1}}}\n\
-                 \n\
-                 {i1}public override void WriteJson(\n\
-                 {i2}JsonWriter writer,\n\
-                 {i2}{name} value,\n\
-                 {i2}JsonSerializer serializer)\n\
-                 {i1}{{\n\
-                 {i2}switch (value)\n\
-                 {i2}{{\n\
-                 {write}\n\
-                 {i2}}}\n\
-                 {i1}}}\n\
-                 {base}}}",
-                base = base_indent,
-                name = #csharp_name,
-                i1 = converter_inner,
-                i2 = converter_inner2,
-                read = read_block,
-                write = write_block,
-            )
+            if generic_suffix.is_empty() {
+                format!(
+                    "\n\
+                     {base}private sealed class {name}Converter : JsonConverter<{name}>\n\
+                     {base}{{\n\
+                     {i1}public override {name} ReadJson(\n\
+                     {i2}JsonReader reader,\n\
+                     {i2}Type objectType,\n\
+                     {i2}{name} existingValue,\n\
+                     {i2}bool hasExistingValue,\n\
+                     {i2}JsonSerializer serializer)\n\
+                     {i1}{{\n\
+                     {i2}var token = JToken.ReadFrom(reader);\n\
+                     \n\
+                     {read}\n\
+                     \n\
+                     {i2}throw new JsonException(\"No matching variant found for {name}\");\n\
+                     {i1}}}\n\
+                     \n\
+                     {i1}public override void WriteJson(\n\
+                     {i2}JsonWriter writer,\n\
+                     {i2}{name} value,\n\
+                     {i2}JsonSerializer serializer)\n\
+                     {i1}{{\n\
+                     {i2}switch (value)\n\
+                     {i2}{{\n\
+                     {write}\n\
+                     {i2}}}\n\
+                     {i1}}}\n\
+                     {base}}}",
+                    base = base_indent,
+                    name = #csharp_name,
+                    i1 = converter_inner,
+                    i2 = converter_inner2,
+                    read = read_block,
+                    write = write_block,
+                )
+            } else {
+                let open_commas = ",".repeat(generic_suffix.matches(',').count());
+                format!(
+                    "\n\
+                     {base}private sealed class {name}Converter : JsonConverter\n\
+                     {base}{{\n\
+                     {i1}public override bool CanConvert(Type objectType) =>\n\
+                     {i2}objectType.IsGenericType && objectType.GetGenericTypeDefinition() == typeof({name}<{oc}>);\n\
+                     \n\
+                     {i1}public override object ReadJson(\n\
+                     {i2}JsonReader reader,\n\
+                     {i2}Type objectType,\n\
+                     {i2}object existingValue,\n\
+                     {i2}JsonSerializer serializer)\n\
+                     {i1}{{\n\
+                     {i2}var token = JToken.ReadFrom(reader);\n\
+                     \n\
+                     {read}\n\
+                     \n\
+                     {i2}throw new JsonException(\"No matching variant found for {name}\");\n\
+                     {i1}}}\n\
+                     \n\
+                     {i1}public override void WriteJson(\n\
+                     {i2}JsonWriter writer,\n\
+                     {i2}object value,\n\
+                     {i2}JsonSerializer serializer)\n\
+                     {i1}{{\n\
+                     {i2}switch (value)\n\
+                     {i2}{{\n\
+                     {write}\n\
+                     {i2}}}\n\
+                     {i1}}}\n\
+                     {base}}}",
+                    base = base_indent,
+                    name = #csharp_name,
+                    oc = open_commas,
+                    i1 = converter_inner,
+                    i2 = converter_inner2,
+                    read = read_block,
+                    write = write_block,
+                )
+            }
         }
     }
 }

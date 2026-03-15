@@ -1,12 +1,34 @@
-// Rust guideline compliant 2026-03-14
+// Rust guideline compliant 2026-03-15
 //! Container-level attribute parsing for `#[serde(...)]` and `#[csharp(...)]`.
 //!
 //! Extracts `rename_all` from serde attributes and `namespace`, `export`,
-//! `export_to` from csharp attributes on the container (struct/enum).
+//! `export_to`, `concrete`, `bound` from csharp attributes on the container
+//! (struct/enum).
+
+use std::collections::HashMap;
 
 use super::Inflection;
 use crate::config::CSharpNamespace;
-use syn::{Attribute, Lit};
+use syn::parse::{Parse, ParseStream};
+use syn::punctuated::Punctuated;
+use syn::{Attribute, Ident, Lit, Token, WherePredicate};
+
+/// A single `Ident = Type` mapping inside `#[csharp(concrete(...))]`.
+struct ConcreteMapping {
+    ident: Ident,
+    _eq: Token![=],
+    ty: syn::Type,
+}
+
+impl Parse for ConcreteMapping {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        Ok(Self {
+            ident: input.parse()?,
+            _eq: input.parse()?,
+            ty: input.parse()?,
+        })
+    }
+}
 
 /// Parsed container-level attributes.
 #[derive(Debug, Default)]
@@ -29,6 +51,10 @@ pub struct ContainerAttr {
     pub export: bool,
     /// Custom export path from `#[csharp(export_to = "...")]`.
     pub export_to: Option<String>,
+    /// Concrete type substitutions from `#[csharp(concrete(T = String, ...))]`.
+    pub concrete: HashMap<Ident, syn::Type>,
+    /// Custom where-clause bounds from `#[csharp(bound = "...")]`.
+    pub bound: Option<Vec<WherePredicate>>,
 }
 
 impl ContainerAttr {
@@ -109,6 +135,24 @@ impl ContainerAttr {
                     if let Lit::Str(lit_str) = lit {
                         self.export_to = Some(lit_str.value());
                         self.export = true;
+                    }
+                }
+                Some("concrete") => {
+                    let content;
+                    syn::parenthesized!(content in meta.input);
+                    let pairs =
+                        Punctuated::<ConcreteMapping, Token![,]>::parse_terminated(&content)?;
+                    for mapping in pairs {
+                        self.concrete.insert(mapping.ident, mapping.ty);
+                    }
+                }
+                Some("bound") => {
+                    let value = meta.value()?;
+                    let lit: Lit = value.parse()?;
+                    if let Lit::Str(lit_str) = lit {
+                        let predicates: Punctuated<WherePredicate, Token![,]> =
+                            lit_str.parse_with(Punctuated::parse_terminated)?;
+                        self.bound = Some(predicates.into_iter().collect());
                     }
                 }
                 _ => return Err(meta.error("unrecognized csharp attribute")),
@@ -273,5 +317,41 @@ mod tests {
         let container = ContainerAttr::from_attrs(&attrs).unwrap();
         assert!(container.transparent);
         assert_eq!(container.namespace.as_deref(), Some("Ids"));
+    }
+
+    #[test]
+    fn parse_csharp_concrete_single() {
+        let attrs: Vec<Attribute> = vec![parse_quote!(#[csharp(concrete(T = String))])];
+        let container = ContainerAttr::from_attrs(&attrs).unwrap();
+        assert_eq!(container.concrete.len(), 1);
+        assert!(container.concrete.contains_key(&parse_quote!(T)));
+    }
+
+    #[test]
+    fn parse_csharp_concrete_multiple() {
+        let attrs: Vec<Attribute> =
+            vec![parse_quote!(#[csharp(concrete(T = String, U = i32))])];
+        let container = ContainerAttr::from_attrs(&attrs).unwrap();
+        assert_eq!(container.concrete.len(), 2);
+        assert!(container.concrete.contains_key(&parse_quote!(T)));
+        assert!(container.concrete.contains_key(&parse_quote!(U)));
+    }
+
+    #[test]
+    fn parse_csharp_bound() {
+        let attrs: Vec<Attribute> =
+            vec![parse_quote!(#[csharp(bound = "T: std::fmt::Display")])];
+        let container = ContainerAttr::from_attrs(&attrs).unwrap();
+        assert!(container.bound.is_some());
+        assert_eq!(container.bound.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn parse_csharp_concrete_with_export() {
+        let attrs: Vec<Attribute> =
+            vec![parse_quote!(#[csharp(concrete(T = String), export)])];
+        let container = ContainerAttr::from_attrs(&attrs).unwrap();
+        assert_eq!(container.concrete.len(), 1);
+        assert!(container.export);
     }
 }

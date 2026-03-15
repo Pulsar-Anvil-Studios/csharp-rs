@@ -1,4 +1,4 @@
-// Rust guideline compliant 2026-03-14
+// Rust guideline compliant 2026-03-15
 //! Generate C# type definitions from Rust structs and enums.
 //!
 //! `csharp-rs` provides a derive macro that generates C# class, record,
@@ -189,6 +189,49 @@ impl Default for Config {
 }
 
 impl Config {
+    /// Creates a configuration from environment variables.
+    ///
+    /// Reads the following environment variables, falling back to defaults
+    /// for missing or invalid values:
+    ///
+    /// - `CSHARP_RS_EXPORT_DIR` — output directory (default: `"./csharp-bindings"`)
+    /// - `CSHARP_RS_SERIALIZER` — `"stj"` or `"newtonsoft"` (default: `"stj"`)
+    /// - `CSHARP_RS_TARGET` — `"unity"`, `"9"`, `"10"`, `"11"`, `"12"` (default: `"9"`)
+    /// - `CSHARP_RS_NAMESPACE` — C# namespace (default: `"Generated"`)
+    #[must_use]
+    pub fn from_env() -> Self {
+        let mut cfg = Self::default();
+
+        if let Ok(dir) = std::env::var("CSHARP_RS_EXPORT_DIR") {
+            cfg.export_dir = PathBuf::from(dir);
+        }
+
+        if let Ok(serializer) = std::env::var("CSHARP_RS_SERIALIZER") {
+            if serializer.as_str() == "newtonsoft" {
+                cfg.serializer = Serializer::Newtonsoft;
+            }
+        }
+
+        if let Ok(target) = std::env::var("CSHARP_RS_TARGET") {
+            match target.as_str() {
+                "unity" => cfg.target = CSharpVersion::Unity,
+                "9" => cfg.target = CSharpVersion::CSharp9,
+                "10" => cfg.target = CSharpVersion::CSharp10,
+                "11" => cfg.target = CSharpVersion::CSharp11,
+                "12" => cfg.target = CSharpVersion::CSharp12,
+                _ => {} // unknown value, keep default
+            }
+        }
+
+        if let Ok(ns) = std::env::var("CSHARP_RS_NAMESPACE") {
+            if let Ok(validated) = CSharpNamespace::new(ns) {
+                cfg.namespace = validated;
+            }
+        }
+
+        cfg
+    }
+
     /// Sets the root namespace. Panics if the value is not a valid C#
     /// namespace.
     ///
@@ -617,6 +660,89 @@ mod tests {
         assert_eq!(cfg.serializer(), Serializer::Newtonsoft);
         assert_eq!(cfg.target(), CSharpVersion::CSharp11);
         assert_eq!(cfg.export_dir(), Path::new("./generated"));
+    }
+
+    // NOTE: Tests that call `std::env::set_var` / `remove_var` are NOT
+    // thread-safe.  Run with `--test-threads=1` if they start flaking.
+
+    #[test]
+    fn from_env_defaults_match_default() {
+        let cfg = Config::from_env();
+        let default = Config::default();
+        assert_eq!(cfg.namespace(), default.namespace());
+        assert_eq!(cfg.serializer(), default.serializer());
+        assert_eq!(cfg.target(), default.target());
+        assert_eq!(cfg.export_dir(), default.export_dir());
+    }
+
+    #[test]
+    fn from_env_reads_serializer() {
+        // SAFETY: single-threaded test; no concurrent env access.
+        unsafe { std::env::set_var("CSHARP_RS_SERIALIZER", "newtonsoft") };
+        let cfg = Config::from_env();
+        assert_eq!(cfg.serializer(), Serializer::Newtonsoft);
+        // SAFETY: single-threaded test; restoring env to original state.
+        unsafe { std::env::remove_var("CSHARP_RS_SERIALIZER") };
+    }
+
+    #[test]
+    fn from_env_reads_target_unity() {
+        // SAFETY: single-threaded test; no concurrent env access.
+        unsafe { std::env::set_var("CSHARP_RS_TARGET", "unity") };
+        let cfg = Config::from_env();
+        assert_eq!(cfg.target(), CSharpVersion::Unity);
+        // SAFETY: single-threaded test; restoring env to original state.
+        unsafe { std::env::remove_var("CSHARP_RS_TARGET") };
+    }
+
+    #[test]
+    fn from_env_reads_target_version() {
+        // SAFETY: single-threaded test; no concurrent env access.
+        unsafe { std::env::set_var("CSHARP_RS_TARGET", "11") };
+        let cfg = Config::from_env();
+        assert_eq!(cfg.target(), CSharpVersion::CSharp11);
+        // SAFETY: single-threaded test; restoring env to original state.
+        unsafe { std::env::remove_var("CSHARP_RS_TARGET") };
+    }
+
+    #[test]
+    fn from_env_reads_namespace() {
+        // SAFETY: single-threaded test; no concurrent env access.
+        unsafe { std::env::set_var("CSHARP_RS_NAMESPACE", "Game.Types") };
+        let cfg = Config::from_env();
+        assert_eq!(cfg.namespace(), "Game.Types");
+        // SAFETY: single-threaded test; restoring env to original state.
+        unsafe { std::env::remove_var("CSHARP_RS_NAMESPACE") };
+    }
+
+    #[test]
+    fn from_env_reads_export_dir() {
+        // SAFETY: single-threaded test; no concurrent env access.
+        unsafe { std::env::set_var("CSHARP_RS_EXPORT_DIR", "/tmp/csharp-out") };
+        let cfg = Config::from_env();
+        assert_eq!(cfg.export_dir(), Path::new("/tmp/csharp-out"));
+        // SAFETY: single-threaded test; restoring env to original state.
+        unsafe { std::env::remove_var("CSHARP_RS_EXPORT_DIR") };
+    }
+
+    #[test]
+    fn from_env_invalid_namespace_falls_back() {
+        // SAFETY: single-threaded test; no concurrent env access.
+        unsafe { std::env::set_var("CSHARP_RS_NAMESPACE", "123invalid") };
+        let cfg = Config::from_env();
+        assert_eq!(cfg.namespace(), "Generated");
+        // SAFETY: single-threaded test; restoring env to original state.
+        unsafe { std::env::remove_var("CSHARP_RS_NAMESPACE") };
+    }
+
+    #[test]
+    fn from_env_unknown_serializer_falls_back() {
+        // SAFETY: single-threaded test; no concurrent env access.
+        unsafe { std::env::set_var("CSHARP_RS_SERIALIZER", "protobuf") };
+        let cfg = Config::from_env();
+        assert_eq!(cfg.serializer(), Serializer::SystemTextJson);
+        // SAFETY: single-threaded test; restoring env to original state.
+        unsafe { std::env::remove_var("CSHARP_RS_SERIALIZER") };
     }
 
     #[test]

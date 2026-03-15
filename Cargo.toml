@@ -5,10 +5,12 @@ members = ["crates/csharp-rs", "crates/csharp-rs-macros"]
 [workspace.package]
 edition = "2024"
 rust-version = "1.85"
+authors = ["Clément Cornut <cornut.clem@gmail.com>"]
 license = "MIT"
+homepage = "https://github.com/Pulsar-Anvil-Studios/csharp-rs"
 repository = "https://github.com/Pulsar-Anvil-Studios/csharp-rs"
 keywords = ["csharp", "codegen", "derive", "serde", "unity"]
-categories = ["development-tools::ffi"]
+categories = ["development-tools::ffi", "development-tools::build-utils"]
 readme = "README.md"
 
 [workspace.dependencies]

@@ -1,0 +1,85 @@
+name: Release & Publish
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Release & Publish to crates.io
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PEM_FILE }}
+
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install git-cliff
+        uses: taiki-e/install-action@v2
+        with:
+          tool: git-cliff
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          echo "version=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Version: $TAG"
+
+      - name: Update Cargo.toml versions
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" crates/csharp-rs/Cargo.toml
+          sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" crates/csharp-rs-macros/Cargo.toml
+          sed -i "s/version = \"=.*\"/version = \"=${VERSION}\"/" crates/csharp-rs/Cargo.toml
+          cargo update -w
+
+      - name: Generate changelog
+        run: |
+          git-cliff --tag "v${{ steps.version.outputs.version }}" -o CHANGELOG.md
+          git-cliff --tag "v${{ steps.version.outputs.version }}" --unreleased --strip header -o RELEASE_NOTES.md
+
+      - name: Commit version bump and changelog
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A -- ':!RELEASE_NOTES.md'
+          git commit -m "chore(release): v${{ steps.version.outputs.version }} [skip ci]"
+          git push origin HEAD:main
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          gh release create "v${{ steps.version.outputs.version }}" \
+            --title "v${{ steps.version.outputs.version }}" \
+            --notes-file RELEASE_NOTES.md
+
+      - name: Publish csharp-rs-macros to crates.io
+        run: cargo publish -p csharp-rs-macros --allow-dirty
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Wait for crates.io indexing
+        run: sleep 30
+
+      - name: Publish csharp-rs to crates.io
+        run: cargo publish -p csharp-rs --allow-dirty
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

@@ -113,3 +113,6 @@ jobs:
 
       - name: Run C# compilation tests
         run: cargo test --test csharp_compilation --all-features -- --ignored
+
+      - name: Run C# round-trip tests
+        run: cargo test --test csharp_roundtrip --all-features -- --ignored

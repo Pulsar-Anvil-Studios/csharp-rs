@@ -206,9 +206,9 @@ pub fn build_tagged_enum_definition(
             // Using directives
             let using_block = if use_native_polymorphism {
                 if #has_hashmap_flatten {
-                    "using System.Collections.Generic;\nusing System.Linq;\nusing System.Text.Json;\nusing System.Text.Json.Serialization;"
+                    "using System;\nusing System.Collections.Generic;\nusing System.Linq;\nusing System.Text.Json;\nusing System.Text.Json.Serialization;"
                 } else {
-                    "using System.Collections.Generic;\nusing System.Linq;\nusing System.Text.Json.Serialization;"
+                    "using System;\nusing System.Collections.Generic;\nusing System.Linq;\nusing System.Text.Json.Serialization;"
                 }
             } else {
                 match cfg.serializer() {

@@ -1,4 +1,4 @@
-// Rust guideline compliant 2026-03-14
+// Rust guideline compliant 2026-03-15
 //! Token stream generation from the [`DerivedCSharp`] intermediate representation.
 //!
 //! Produces the `impl CSharp for T` block, including `csharp_name()`,
@@ -258,7 +258,7 @@ impl DerivedCSharp {
             quote! {
                 #[test]
                 fn #test_name() {
-                    let cfg = csharp_rs::Config::default();
+                    let cfg = csharp_rs::Config::from_env();
                     csharp_rs::export_to::<#ident>(&cfg, #file_path)
                         .expect("failed to export C# definition");
                 }
@@ -268,7 +268,7 @@ impl DerivedCSharp {
             quote! {
                 #[test]
                 fn #test_name() {
-                    let cfg = csharp_rs::Config::default();
+                    let cfg = csharp_rs::Config::from_env();
                     let file_path = format!("{}/{}.cs", cfg.export_dir().display(), #csharp_name);
                     csharp_rs::export_to::<#ident>(&cfg, file_path)
                         .expect("failed to export C# definition");
@@ -433,8 +433,8 @@ mod tests {
             "should resolve export dir at runtime:\n{tokens}"
         );
         assert!(
-            tokens.contains("Config :: default ()"),
-            "export test should create Config via default():\n{tokens}"
+            tokens.contains("Config :: from_env ()"),
+            "export test should create Config via from_env():\n{tokens}"
         );
         assert!(
             tokens.contains("export_to"),
@@ -451,8 +451,8 @@ mod tests {
             "should use custom export dir:\n{tokens}"
         );
         assert!(
-            tokens.contains("Config :: default ()"),
-            "export test should create Config via default():\n{tokens}"
+            tokens.contains("Config :: from_env ()"),
+            "export test should create Config via from_env():\n{tokens}"
         );
     }
 

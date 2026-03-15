@@ -160,12 +160,43 @@ enum WithEnumRenaming {
 }
 
 // ---------------------------------------------------------------------------
+// Generic type features
+// ---------------------------------------------------------------------------
+
+#[derive(CSharp)]
+struct GenericStruct<T> {
+    value: T,
+    label: String,
+}
+
+#[derive(CSharp)]
+struct GenericPair<A, B> {
+    first: A,
+    second: B,
+}
+
+#[derive(CSharp)]
+struct GenericWrapper<T> {
+    items: Vec<T>,
+    maybe: Option<T>,
+    lookup: HashMap<String, T>,
+}
+
+#[derive(CSharp)]
+#[serde(tag = "type")]
+enum GenericTaggedEnum<T> {
+    Data { payload: T },
+    Empty,
+}
+
+// ---------------------------------------------------------------------------
 // Compilation helper
 // ---------------------------------------------------------------------------
 
 /// Exports all test types as `.cs` files, writes a `.csproj`, and runs `dotnet build`.
 ///
 /// Panics if `dotnet` is not found or the build fails.
+#[expect(clippy::too_many_lines, reason = "single orchestration function for all type exports")]
 fn compile_all_types(
     version: CSharpVersion,
     serializer: Serializer,
@@ -229,6 +260,22 @@ fn compile_all_types(
         (
             "WithEnumRenaming",
             WithEnumRenaming::csharp_definition(&cfg),
+        ),
+        (
+            "GenericStruct",
+            GenericStruct::<String>::csharp_definition(&cfg),
+        ),
+        (
+            "GenericPair",
+            GenericPair::<String, i32>::csharp_definition(&cfg),
+        ),
+        (
+            "GenericWrapper",
+            GenericWrapper::<String>::csharp_definition(&cfg),
+        ),
+        (
+            "GenericTaggedEnum",
+            GenericTaggedEnum::<String>::csharp_definition(&cfg),
         ),
     ];
 

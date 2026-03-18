@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -e
+
+COVERAGE_THRESHOLD=98
+
+# Check cargo-llvm-cov is installed
+if ! command -v cargo-llvm-cov &> /dev/null; then
+  echo "ERROR: cargo-llvm-cov is not installed."
+  echo "Install with: cargo install cargo-llvm-cov"
+  echo "Also ensure llvm-tools-preview is installed: rustup component add llvm-tools-preview"
+  exit 1
+fi
+
+IGNORE_ARGS=""
+if [ -d "lambdas" ]; then
+  IGNORE_ARGS="--ignore-filename-regex lambdas/.*/src/main\.rs"
+fi
+
+echo "==> Running tests with coverage (threshold: ${COVERAGE_THRESHOLD}%)..."
+cargo llvm-cov --all-features --workspace $IGNORE_ARGS --fail-under-lines $COVERAGE_THRESHOLD
+
+echo "==> Coverage check passed (>= ${COVERAGE_THRESHOLD}%)."

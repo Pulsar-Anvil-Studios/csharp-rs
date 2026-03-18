@@ -438,6 +438,30 @@ fn csharp_type_override_replaces_csharp_type() {
     );
 }
 
+// --- csharp type override suppresses nullable suffix ---
+
+#[derive(CSharp)]
+#[allow(clippy::option_option, reason = "testing nested Option type override")]
+struct WithNestedOptionTypeOverride {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[csharp(type = "string?")]
+    inherits_from: Option<Option<String>>,
+}
+
+#[test]
+fn csharp_type_override_suppresses_double_nullable() {
+    let cfg = Config::default();
+    let def = WithNestedOptionTypeOverride::csharp_definition(&cfg);
+    assert!(
+        def.contains("string? InheritsFrom"),
+        "type override should produce string?, not string??:\n{def}"
+    );
+    assert!(
+        !def.contains("string??"),
+        "double nullable must not appear:\n{def}"
+    );
+}
+
 // --- combined field attrs ---
 
 #[derive(CSharp)]

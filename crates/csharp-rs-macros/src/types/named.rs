@@ -90,10 +90,14 @@ pub fn named_struct(
         let is_optional = is_optional || field_attr.skip_serializing_if || field_attr.default;
 
         // Apply explicit C# type override if specified via #[csharp(type = "...")].
-        let type_expr = if let Some(ref override_type) = field_attr.type_override {
-            quote! { String::from(#override_type) }
+        // When an override is present the user controls the full type string, so
+        // suppress the automatic nullable suffix to avoid double-`?` (e.g.
+        // `Option<Option<String>>` with `#[csharp(type = "string?")]` → `string?`,
+        // not `string??`).
+        let (is_optional, type_expr) = if let Some(ref override_type) = field_attr.type_override {
+            (false, quote! { String::from(#override_type) })
         } else {
-            type_expr
+            (is_optional, type_expr)
         };
 
         fields.push(CSharpField {

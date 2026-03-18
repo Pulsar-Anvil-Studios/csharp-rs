@@ -11,12 +11,12 @@ if ! command -v cargo-llvm-cov &> /dev/null; then
   exit 1
 fi
 
-IGNORE_ARGS=""
+IGNORE_ARGS=()
 if [ -d "lambdas" ]; then
-  IGNORE_ARGS="--ignore-filename-regex lambdas/.*/src/main\.rs"
+  IGNORE_ARGS=(--ignore-filename-regex 'lambdas[/\\].*[/\\]src[/\\]main\.rs$')
 fi
 
 echo "==> Running tests with coverage (threshold: ${COVERAGE_THRESHOLD}%)..."
-cargo llvm-cov --all-features --workspace $IGNORE_ARGS --fail-under-lines $COVERAGE_THRESHOLD
+cargo llvm-cov --all-features --workspace "${IGNORE_ARGS[@]}" --fail-under-lines $COVERAGE_THRESHOLD
 
 echo "==> Coverage check passed (>= ${COVERAGE_THRESHOLD}%)."

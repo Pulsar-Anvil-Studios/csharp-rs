@@ -1,6 +1,6 @@
 [package]
 name = "csharp-rs"
-version = "0.1.1"
+version = "0.1.2"
 description = "Generate C# type definitions from Rust structs and enums"
 authors.workspace = true
 edition.workspace = true
@@ -18,7 +18,7 @@ uuid-impl = ["dep:uuid"]
 serde-json-impl = ["dep:serde_json"]
 
 [dependencies]
-csharp-rs-macros = { path = "../csharp-rs-macros", version = "=0.1.1" }
+csharp-rs-macros = { path = "../csharp-rs-macros", version = "=0.1.2" }
 chrono = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }

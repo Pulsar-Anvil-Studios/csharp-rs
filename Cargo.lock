@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "csharp-rs"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "csharp-rs-macros",
@@ -30,7 +30,7 @@ dependencies = [
 
 [[package]]
 name = "csharp-rs-macros"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "proc-macro2",
  "quote",

@@ -1,3 +1,14 @@
+## [0.1.2] - 2026-03-18
+
+### 🐛 Bug Fixes
+
+- *(hooks)* Use cross-platform regex for coverage exclusion
+- *(macros)* Suppress nullable suffix when csharp type override is present
+
+### ⚙️ Miscellaneous Tasks
+
+- *(release)* V0.1.1 [skip ci]
+- *(hooks)* Add pre-commit and pre-push git hooks
 ## [0.1.1] - 2026-03-15
 
 ### 🚀 Features

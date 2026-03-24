@@ -1,0 +1,72 @@
+name: Scheduled Mutation Testing
+
+on:
+  schedule:
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mutation-testing-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mutate:
+    name: Mutation Testing (shard ${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: Pulsar-Anvil-Studios/pulsaranvil-actions/.github/actions/rust-mutants-full@v1
+        with:
+          shard: ${{ matrix.shard }}
+          total-shards: 2
+          test-tool: "cargo"
+          fail-on-survivors: "false"
+
+  aggregate:
+    name: Aggregate Results
+    needs: mutate
+    if: '!cancelled()'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mutants-shard-*
+          path: mutants-all
+
+      - name: Aggregate mutation results
+        shell: bash
+        run: |
+          CAUGHT=0; MISSED=0; TIMEOUT=0
+          while IFS= read -r f; do
+            [ -f "$f" ] && CAUGHT=$((CAUGHT + $(wc -l < "$f")))
+          done < <(find mutants-all -type f -name 'caught.txt')
+          while IFS= read -r f; do
+            [ -f "$f" ] && MISSED=$((MISSED + $(wc -l < "$f")))
+          done < <(find mutants-all -type f -name 'missed.txt')
+          while IFS= read -r f; do
+            [ -f "$f" ] && TIMEOUT=$((TIMEOUT + $(wc -l < "$f")))
+          done < <(find mutants-all -type f -name 'timeout.txt')
+          TOTAL=$((CAUGHT + MISSED))
+          if [ "$TOTAL" -gt 0 ]; then
+            SCORE=$(awk "BEGIN { printf \"%.1f\", ($CAUGHT / $TOTAL) * 100 }")
+          else
+            SCORE="100.0"
+          fi
+          {
+            echo "## Weekly Mutation Testing Report"
+            echo ""
+            echo "| Metric | Count |"
+            echo "|--------|-------|"
+            echo "| Caught | $CAUGHT |"
+            echo "| Missed | $MISSED |"
+            echo "| Timeout | $TIMEOUT |"
+            echo "| **Score** | **${SCORE}%** |"
+          } >> "$GITHUB_STEP_SUMMARY"

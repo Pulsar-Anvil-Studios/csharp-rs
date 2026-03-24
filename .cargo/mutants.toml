@@ -1,0 +1,1 @@
+exclude_globs = ["crates/csharp-rs-macros/src/codegen/**"]

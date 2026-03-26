@@ -8,6 +8,7 @@ LCOV_FILE="${1:?Usage: diff-coverage.sh <lcov-file> <base-sha> <pr-number> [thre
 BASE_SHA="${2:?Usage: diff-coverage.sh <lcov-file> <base-sha> <pr-number> [threshold]}"
 PR_NUMBER="${3:?Usage: diff-coverage.sh <lcov-file> <base-sha> <pr-number> [threshold]}"
 THRESHOLD="${4:-98}"
+GLOBAL_THRESHOLD="${5:-$THRESHOLD}"
 
 COMMENT_MARKER="<!-- coverage-report -->"
 
@@ -186,7 +187,7 @@ else
     GLOBAL_PCT="100.0"
 fi
 
-GLOBAL_PASS=$(awk -v p="$GLOBAL_PCT" -v t="$THRESHOLD" \
+GLOBAL_PASS=$(awk -v p="$GLOBAL_PCT" -v t="$GLOBAL_THRESHOLD" \
     'BEGIN { print (p >= t) ? "1" : "0" }')
 
 if (( GLOBAL_PASS )); then
@@ -204,7 +205,7 @@ BODY="${COMMENT_MARKER}
 
 | Metric | Value | Threshold | Status |
 |--------|-------|-----------|--------|
-| Global | ${GLOBAL_PCT}% | ${THRESHOLD}% | ${GLOBAL_STATUS} |
+| Global | ${GLOBAL_PCT}% | ${GLOBAL_THRESHOLD}% | ${GLOBAL_STATUS} |
 | Diff | ${DIFF_PCT}% | ${THRESHOLD}% | ${DIFF_STATUS} |
 
 ### Changed Files

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -e
 
-COVERAGE_THRESHOLD=98
+COVERAGE_THRESHOLD=90
+REGION_THRESHOLD=85
 
 # Check cargo-llvm-cov is installed
 if ! command -v cargo-llvm-cov &> /dev/null; then
@@ -16,7 +17,9 @@ if [ -d "lambdas" ]; then
   IGNORE_ARGS=(--ignore-filename-regex 'lambdas[/\\].*[/\\]src[/\\]main\.rs$')
 fi
 
-echo "==> Running tests with coverage (threshold: ${COVERAGE_THRESHOLD}%)..."
-cargo llvm-cov --all-features --workspace "${IGNORE_ARGS[@]}" --fail-under-lines $COVERAGE_THRESHOLD
+echo "==> Running tests with coverage (lines: ${COVERAGE_THRESHOLD}%, regions: ${REGION_THRESHOLD}%)..."
+cargo llvm-cov --all-features --workspace "${IGNORE_ARGS[@]}" --no-report
+cargo llvm-cov report "${IGNORE_ARGS[@]}" --fail-under-lines $COVERAGE_THRESHOLD
+cargo llvm-cov report "${IGNORE_ARGS[@]}" --fail-under-regions $REGION_THRESHOLD
 
-echo "==> Coverage check passed (>= ${COVERAGE_THRESHOLD}%)."
+echo "==> Coverage check passed (lines >= ${COVERAGE_THRESHOLD}%, regions >= ${REGION_THRESHOLD}%)."

@@ -494,6 +494,7 @@ impl<T: CSharp, S: std::hash::BuildHasher> CSharp for HashSet<T, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn serializer_default_is_system_text_json() {
@@ -662,10 +663,11 @@ mod tests {
         assert_eq!(cfg.export_dir(), Path::new("./generated"));
     }
 
-    // NOTE: Tests that call `std::env::set_var` / `remove_var` are NOT
-    // thread-safe.  Run with `--test-threads=1` if they start flaking.
+    // Tests that call `std::env::set_var` / `remove_var` are serialized
+    // via `#[serial]` to prevent env-var races under parallel test execution.
 
     #[test]
+    #[serial]
     fn from_env_defaults_match_default() {
         let cfg = Config::from_env();
         let default = Config::default();
@@ -676,6 +678,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn from_env_reads_serializer() {
         // SAFETY: single-threaded test; no concurrent env access.
         unsafe { std::env::set_var("CSHARP_RS_SERIALIZER", "newtonsoft") };
@@ -686,6 +689,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn from_env_reads_target_unity() {
         // SAFETY: single-threaded test; no concurrent env access.
         unsafe { std::env::set_var("CSHARP_RS_TARGET", "unity") };
@@ -696,6 +700,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn from_env_reads_target_version() {
         // SAFETY: single-threaded test; no concurrent env access.
         unsafe { std::env::set_var("CSHARP_RS_TARGET", "11") };
@@ -706,6 +711,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn from_env_reads_namespace() {
         // SAFETY: single-threaded test; no concurrent env access.
         unsafe { std::env::set_var("CSHARP_RS_NAMESPACE", "Game.Types") };
@@ -716,6 +722,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn from_env_reads_export_dir() {
         // SAFETY: single-threaded test; no concurrent env access.
         unsafe { std::env::set_var("CSHARP_RS_EXPORT_DIR", "/tmp/csharp-out") };
@@ -726,6 +733,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn from_env_invalid_namespace_falls_back() {
         // SAFETY: single-threaded test; no concurrent env access.
         unsafe { std::env::set_var("CSHARP_RS_NAMESPACE", "123invalid") };
@@ -736,6 +744,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn from_env_unknown_serializer_falls_back() {
         // SAFETY: single-threaded test; no concurrent env access.
         unsafe { std::env::set_var("CSHARP_RS_SERIALIZER", "protobuf") };

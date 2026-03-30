@@ -62,3 +62,7 @@ unused_result_ok = "warn"
 literal_string_with_formatting_args = "allow"
 # Allow multiple crate versions (transitive deps)
 multiple_crate_versions = "allow"
+
+[profile.mutants]
+inherits = "test"
+debug = "none"

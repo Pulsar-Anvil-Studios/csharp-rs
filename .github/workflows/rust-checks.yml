@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, labeled]
 
 env:
   CARGO_TERM_COLOR: always
@@ -132,7 +133,7 @@ jobs:
 
   mutation-testing:
     name: Mutation Testing
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'run-mutants')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

@@ -1,4 +1,3 @@
-// Rust guideline compliant 2026-03-14
 //! Field-level attribute parsing for `#[serde(...)]` and `#[csharp(...)]`.
 //!
 //! Supports `#[serde(rename = "...")]`, `#[serde(skip)]`,

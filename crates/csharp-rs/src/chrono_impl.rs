@@ -1,4 +1,3 @@
-// Rust guideline compliant 2026-03-14
 //! `CSharp` implementations for `chrono` date and time types.
 //!
 //! Enabled by the `chrono-impl` feature.

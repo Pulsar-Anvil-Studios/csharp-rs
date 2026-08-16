@@ -1,4 +1,3 @@
-// Rust guideline compliant 2026-02-11
 //! Integration tests for `#[derive(CSharp)]` on tagged enums.
 
 #![expect(dead_code, reason = "test enums are only used via derive macro")]

@@ -1,4 +1,3 @@
-// Rust guideline compliant 2026-03-15
 //! Generate C# type definitions from Rust structs and enums.
 //!
 //! `csharp-rs` provides a derive macro that generates C# class, record,
@@ -569,27 +568,27 @@ mod tests {
 
     #[test]
     fn namespace_underscore_prefix_valid() {
-        assert!(CSharpNamespace::new("_Internal").is_ok());
+        CSharpNamespace::new("_Internal").unwrap();
     }
 
     #[test]
     fn namespace_invalid_empty() {
-        assert!(CSharpNamespace::new("").is_err());
+        CSharpNamespace::new("").unwrap_err();
     }
 
     #[test]
     fn namespace_invalid_starts_with_digit() {
-        assert!(CSharpNamespace::new("1Invalid").is_err());
+        CSharpNamespace::new("1Invalid").unwrap_err();
     }
 
     #[test]
     fn namespace_invalid_special_chars() {
-        assert!(CSharpNamespace::new("My-Namespace").is_err());
+        CSharpNamespace::new("My-Namespace").unwrap_err();
     }
 
     #[test]
     fn namespace_invalid_empty_segment() {
-        assert!(CSharpNamespace::new("A..B").is_err());
+        CSharpNamespace::new("A..B").unwrap_err();
     }
 
     #[test]

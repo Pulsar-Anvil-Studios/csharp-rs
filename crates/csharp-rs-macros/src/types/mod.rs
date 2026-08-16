@@ -1,4 +1,3 @@
-// Rust guideline compliant 2026-03-15
 //! Type dispatch and intermediate representation for C# code generation.
 //!
 //! Dispatches `syn::DeriveInput` to the appropriate handler based on the

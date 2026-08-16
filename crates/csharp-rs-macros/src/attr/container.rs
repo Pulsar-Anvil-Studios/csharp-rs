@@ -1,4 +1,3 @@
-// Rust guideline compliant 2026-03-15
 //! Container-level attribute parsing for `#[serde(...)]` and `#[csharp(...)]`.
 //!
 //! Extracts `rename_all` from serde attributes and `namespace`, `export`,
@@ -222,8 +221,7 @@ mod tests {
     #[test]
     fn unrecognized_csharp_attr_errors() {
         let attrs: Vec<Attribute> = vec![parse_quote!(#[csharp(bogus)])];
-        let result = ContainerAttr::from_attrs(&attrs);
-        assert!(result.is_err());
+        ContainerAttr::from_attrs(&attrs).unwrap_err();
     }
 
     #[test]
@@ -241,8 +239,7 @@ mod tests {
     #[test]
     fn empty_namespace_errors_at_parse() {
         let attrs: Vec<Attribute> = vec![parse_quote!(#[csharp(namespace = "")])];
-        let result = ContainerAttr::from_attrs(&attrs);
-        assert!(result.is_err());
+        ContainerAttr::from_attrs(&attrs).unwrap_err();
     }
 
     #[test]

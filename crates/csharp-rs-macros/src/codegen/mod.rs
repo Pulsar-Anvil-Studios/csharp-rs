@@ -1,4 +1,3 @@
-// Rust guideline compliant 2026-03-15
 //! Token stream generation from the [`DerivedCSharp`] intermediate representation.
 //!
 //! Produces the `impl CSharp for T` block, including `csharp_name()`,

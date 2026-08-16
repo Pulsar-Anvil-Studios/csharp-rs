@@ -1,4 +1,3 @@
-// Rust guideline compliant 2026-02-10
 //! Attribute parsing for `#[serde(...)]` and `#[csharp(...)]`.
 //!
 //! Provides the [`Inflection`] enum for case-conversion conventions

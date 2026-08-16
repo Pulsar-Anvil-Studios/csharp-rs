@@ -1,4 +1,3 @@
-// Rust guideline compliant 2026-02-10
 //! Integration tests for `#[derive(CSharp)]` on enums with unit variants.
 
 #![expect(dead_code, reason = "test enums are only used via derive macro")]

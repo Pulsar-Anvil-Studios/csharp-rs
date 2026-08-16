@@ -1,4 +1,3 @@
-// Rust guideline compliant 2026-03-15
 //! Named struct processing for C# code generation.
 //!
 //! Converts a Rust struct with named fields into the [`DerivedCSharp`]

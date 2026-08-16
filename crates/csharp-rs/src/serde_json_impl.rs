@@ -1,4 +1,3 @@
-// Rust guideline compliant 2026-03-14
 //! `CSharp` implementations for `serde_json` types.
 //!
 //! Enabled by the `serde-json-impl` feature.

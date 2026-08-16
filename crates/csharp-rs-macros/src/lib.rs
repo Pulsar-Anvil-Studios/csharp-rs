@@ -1,4 +1,3 @@
-// Rust guideline compliant 2026-02-10
 //! Proc macro implementation for the `csharp-rs` crate.
 //!
 //! This crate provides the `#[derive(CSharp)]` macro that generates C# type

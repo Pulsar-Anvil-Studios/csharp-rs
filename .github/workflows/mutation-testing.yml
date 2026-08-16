@@ -1,8 +1,6 @@
 name: Scheduled Mutation Testing
 
 on:
-  schedule:
-    - cron: '0 3 * * 1'
   workflow_dispatch:
 
 permissions:
@@ -33,7 +31,7 @@ jobs:
   aggregate:
     name: Aggregate Results
     needs: mutate
-    if: '!cancelled()'
+    if: "!cancelled()"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

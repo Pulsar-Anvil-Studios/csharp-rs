@@ -1,4 +1,3 @@
-// Rust guideline compliant 2026-03-14
 //! Integration tests for `#[derive(CSharp)]` on structs with named fields.
 
 #![expect(dead_code, reason = "test structs are only used via derive macro")]

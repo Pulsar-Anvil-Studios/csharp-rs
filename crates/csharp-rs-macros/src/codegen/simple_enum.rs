@@ -1,4 +1,3 @@
-// Rust guideline compliant 2026-02-15
 //! Simple enum (public enum) code generation from unit variants.
 
 use crate::types::CSharpVariant;

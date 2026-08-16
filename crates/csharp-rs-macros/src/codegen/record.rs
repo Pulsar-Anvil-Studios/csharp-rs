@@ -1,4 +1,3 @@
-// Rust guideline compliant 2026-03-15
 //! Record (sealed record / sealed class) code generation from struct fields.
 
 use crate::types::{CSharpField, FlattenKind};

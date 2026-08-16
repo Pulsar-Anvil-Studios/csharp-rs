@@ -1,4 +1,3 @@
-// Rust guideline compliant 2026-03-14
 //! Namespace validation for `#[csharp(namespace = "...")]` attribute parsing.
 
 use std::fmt;
@@ -74,41 +73,41 @@ mod tests {
 
     #[test]
     fn namespace_valid_single_segment() {
-        assert!(CSharpNamespace::new("Foo").is_ok());
-        assert!(CSharpNamespace::new("_Foo").is_ok());
-        assert!(CSharpNamespace::new("Foo123").is_ok());
-        assert!(CSharpNamespace::new("Generated").is_ok());
+        CSharpNamespace::new("Foo").unwrap();
+        CSharpNamespace::new("_Foo").unwrap();
+        CSharpNamespace::new("Foo123").unwrap();
+        CSharpNamespace::new("Generated").unwrap();
     }
 
     #[test]
     fn namespace_valid_multi_segment() {
-        assert!(CSharpNamespace::new("Foo.Bar").is_ok());
-        assert!(CSharpNamespace::new("PulsarAnvil.Types").is_ok());
-        assert!(CSharpNamespace::new("My.Deep.Nested.Ns").is_ok());
+        CSharpNamespace::new("Foo.Bar").unwrap();
+        CSharpNamespace::new("PulsarAnvil.Types").unwrap();
+        CSharpNamespace::new("My.Deep.Nested.Ns").unwrap();
     }
 
     #[test]
     fn namespace_invalid_empty() {
-        assert!(CSharpNamespace::new("").is_err());
+        CSharpNamespace::new("").unwrap_err();
     }
 
     #[test]
     fn namespace_invalid_empty_segment() {
-        assert!(CSharpNamespace::new(".Foo").is_err());
-        assert!(CSharpNamespace::new("Foo.").is_err());
-        assert!(CSharpNamespace::new("Foo..Bar").is_err());
+        CSharpNamespace::new(".Foo").unwrap_err();
+        CSharpNamespace::new("Foo.").unwrap_err();
+        CSharpNamespace::new("Foo..Bar").unwrap_err();
     }
 
     #[test]
     fn namespace_invalid_starts_with_digit() {
-        assert!(CSharpNamespace::new("123foo").is_err());
-        assert!(CSharpNamespace::new("Foo.1Bar").is_err());
+        CSharpNamespace::new("123foo").unwrap_err();
+        CSharpNamespace::new("Foo.1Bar").unwrap_err();
     }
 
     #[test]
     fn namespace_invalid_special_chars() {
-        assert!(CSharpNamespace::new("foo bar").is_err());
-        assert!(CSharpNamespace::new("foo-bar").is_err());
+        CSharpNamespace::new("foo bar").unwrap_err();
+        CSharpNamespace::new("foo-bar").unwrap_err();
     }
 
     #[test]

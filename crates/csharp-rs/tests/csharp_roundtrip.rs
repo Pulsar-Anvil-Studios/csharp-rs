@@ -1,4 +1,3 @@
-// Rust guideline compliant 2026-03-15
 //! Cross-language JSON round-trip E2E tests.
 //!
 //! Verifies the full cycle:

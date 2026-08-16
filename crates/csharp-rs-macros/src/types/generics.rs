@@ -1,4 +1,3 @@
-// Rust guideline compliant 2026-03-15
 //! Generic type parameter analysis utilities.
 //!
 //! Provides helpers for determining which type parameters from a struct or
@@ -37,7 +36,9 @@ pub fn used_type_params<'ty>(
             }
         }
 
-        Type::Path(TypePath { qself: None, path }) => {
+        Type::Path(TypePath {
+            qself: None, path, ..
+        }) => {
             let Some(first) = path.segments.first() else {
                 return;
             };
@@ -124,7 +125,10 @@ pub fn build_where_predicates(
         let used = collect_used_params(generics, field_types.iter().copied());
         for ty in used {
             // Skip params that are in the concrete map.
-            if let Type::Path(TypePath { qself: None, path }) = ty {
+            if let Type::Path(TypePath {
+                qself: None, path, ..
+            }) = ty
+            {
                 if let Some(first) = path.segments.first() {
                     if concrete.contains_key(&first.ident) {
                         continue;

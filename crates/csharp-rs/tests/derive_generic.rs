@@ -1,4 +1,3 @@
-// Rust guideline compliant 2026-03-15
 //! Integration tests for generic type parameter support.
 
 #![expect(dead_code, reason = "test structs are only used via derive macro")]

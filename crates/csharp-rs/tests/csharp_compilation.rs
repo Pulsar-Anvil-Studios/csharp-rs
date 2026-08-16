@@ -1,4 +1,3 @@
-// Rust guideline compliant 2026-03-14
 //! Integration tests that verify generated C# code actually compiles with `dotnet build`.
 //!
 //! Each test exports all derive types for a specific C# version + serializer combination,

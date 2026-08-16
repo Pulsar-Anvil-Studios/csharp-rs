@@ -1,4 +1,3 @@
-// Rust guideline compliant 2026-03-15
 //! Tagged enum processing for C# code generation.
 //!
 //! Converts a Rust enum with data variants into the [`DerivedCSharp`]

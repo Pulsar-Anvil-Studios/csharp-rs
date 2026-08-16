@@ -1,4 +1,3 @@
-// Rust guideline compliant 2026-03-15
 //! Newtype struct processing.
 //!
 //! Converts `struct Foo(Bar)` into a [`DerivedCSharp`] with a single

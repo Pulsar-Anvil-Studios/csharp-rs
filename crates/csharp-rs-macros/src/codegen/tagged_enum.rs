@@ -1,4 +1,3 @@
-// Rust guideline compliant 2026-03-15
 //! Tagged enum code generation (internally, adjacently, externally tagged, and
 //! untagged).
 //!
